@@ -382,9 +382,49 @@ For each mode-5 target produce:
 - `build_tilemap(tile_pixels_size, placements)` — builds the 32x32
   tilemap for either 8x8-tile or 16x16-tile BG mode.
 
-A PNG-to-asset converter should call these building blocks after its
-own deduplication pass. Add a new `mode5_<name>` target next to the
-existing `mode5_2bpp` target and register it in the main dispatch.
+### 9.7 End-to-end image target: `mode5_image`
+
+The full PNG/JPG → assets pipeline described in this section is
+implemented as a dynamic target in
+[`tools/gen_assets.py`](../tools/gen_assets.py):
+
+```
+python3 tools/gen_assets.py mode5_image \
+    --source assets/some_photo.jpg \
+    --crop-align right \
+    --bpp 4 \
+    --name mode5_wallpaper_4bpp
+```
+
+It composes:
+
+- `load_image_as_indexed(source, bpp, crop_align)` — delegates to
+  [`tools/crop_image.py`](../tools/crop_image.py) (`scale_and_crop`,
+  `reduce_palette`) for any source that isn't already 512x448 /
+  pre-quantised, then returns a 2-D `pixels` grid plus a BGR555
+  palette.
+- `slice_super_tiles(pixels)` — produces the 32x28 grid of
+  `[TL, TR, BL, BR]` 8x8 tiles per 16x16 cell.
+- `dedupe_super_tiles(grid)` — flip-aware dedup (identity, H, V, HV)
+  yielding `(unique_super_tiles, placements)` where each placement is
+  `(index, hflip, vflip)`.
+- `super_tile_vram_base(k)` = `(k // 8) * 32 + (k % 8) * 2` — the
+  dense-pack VRAM base index from §3.2 / §9.4.
+- `build_mode5_image_vram(unique, bpp, blank_index)` — tile data with
+  a reserved blank super-tile immediately after the last unique one;
+  aborts with a descriptive error if the required tile index exceeds
+  the 10-bit budget (`MAX_TILE_INDEX = 1023`).
+- `build_mode5_image_tilemap(placements, blank_index)` — 32x32x2 bytes
+  with the 4 unused rows (`y >= 28`) pointing at `blank_index`.
+- A built-in round-trip assertion reconstructs the quantised image
+  from `unique_super_tiles` + `placements` and compares it against
+  the input, so flip-dedup bugs surface immediately.
+
+This is the recommended entry point for new Mode 5 background
+artwork. Adding another image target is usually just another CLI
+invocation with a different `--source` / `--name`; only add a new
+`mode5_<name>` *static* target to `TARGETS` if you want hand-authored
+pixel art rather than a generated image.
 
 ---
 

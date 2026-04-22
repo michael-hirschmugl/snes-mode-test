@@ -10,6 +10,17 @@ architecture, conventions or common pitfalls change.
 > as the preferred 16×16 tileset layout, how BG2 (2bpp) is set up in
 > this repo, what to do to add BG1 (4bpp) on top, CGRAM sharing rules,
 > and a full PNG → 2bpp / 4bpp conversion pipeline.
+>
+> **Converting a photo / arbitrary image to Mode 5 assets?** The
+> `mode5_image` target in `tools/gen_assets.py` takes any JPG/PNG as
+> `--source`, internally reuses `tools/crop_image.py` to scale + crop +
+> palette-quantise it to a 512×448 indexed image, then dedupes 16×16
+> super-tiles (with H/V flip variants, since the tilemap word encodes
+> those bits for free) and dense-packs them into VRAM. Output goes to
+> `build/<--name>/` in the same `{palette.bin, tiles.<bpp>bpp.chr,
+> tilemap.bin, preview.png}` format as the static demos. There is no
+> matching `main_*.s` yet — the target produces data only, ready to
+> `.incbin` into a future 4bpp Mode 5 ROM.
 
 ---
 
@@ -62,6 +73,9 @@ tools/gen_assets.py mode5_2bpp   (Python, Pillow)
   └── writes: build/mode5_2bpp/{palette.bin, tiles.2bpp.chr, tilemap.bin, preview.png}
       (palette.bin + tiles.2bpp.chr are byte-identical to mode0_2bpp;
        only tilemap.bin and preview.png differ.)
+tools/gen_assets.py mode5_image --source PATH [--crop-align …] [--bpp 2|4] [--name NAME]
+  └── writes: build/<NAME>/{palette.bin, tiles.<bpp>bpp.chr, tilemap.bin, preview.png}
+      (image-derived, dedup'd Mode 5 BG1/BG2 background; no ROM build yet.)
 
 main_mode1_4bpp.s ──ca65──► build/main_mode1_4bpp.o ──ld65 (snes.cfg)──► build/mode1_pal_demo.sfc ──fix_checksum.py──► final
 main_mode0_2bpp.s ──ca65──► build/main_mode0_2bpp.o ──ld65 (snes.cfg)──► build/mode0_pal_demo.sfc ──fix_checksum.py──► final
@@ -69,13 +83,54 @@ main_mode5_2bpp.s ──ca65──► build/main_mode5_2bpp.o ──ld65 (snes.c
 ```
 
 The asset generator takes the target name (`mode0_2bpp`, `mode1_4bpp`,
-`mode5_2bpp`, or `all`) as a mandatory CLI argument. The `Makefile`
-invokes it once per target so each asset set is rebuilt independently.
-Each target has its own palette and pixel art (the 4bpp target uses all
-16 palette indices; the 2bpp targets use only indices 0..3). Targets
-also declare a `tile_pixels_size` (8 or 16) and a `screen_size`
-(256×224 or 512×448) so the tilemap and preview renderers know whether
-to emit 8×8-tile or 16×16-tile layouts.
+`mode5_2bpp`, `mode5_image`, or `all`) as a mandatory CLI argument. The
+`Makefile` invokes the static targets once each so they rebuild
+independently; `mode5_image` is a dynamic target that additionally needs
+`--source` and is invoked manually (or by a separate make rule you add
+when it drives a ROM build). `all` only generates the static targets.
+Each static target has its own palette and pixel art (the 4bpp target
+uses all 16 palette indices; the 2bpp targets use only indices 0..3).
+Static targets also declare a `tile_pixels_size` (8 or 16) and a
+`screen_size` (256×224 or 512×448) so the tilemap and preview renderers
+know whether to emit 8×8-tile or 16×16-tile layouts.
+
+### `mode5_image` pipeline
+
+Separate from the hand-rolled pixel-art targets, `mode5_image` turns
+arbitrary input images into a full-screen Mode 5 background:
+
+1. **Load + normalise** via `tools/crop_image.py` (imported as a module):
+   if the source isn't already 512×448 it is scaled to *cover* the
+   frame (`max(512/w, 448/h)`) and cropped with the chosen horizontal
+   anchor (`--crop-align left|center|right`; vertical is always
+   centered). If the source has more than `2**bpp` colours it is
+   palette-quantised (Median-Cut + Floyd-Steinberg dithering).
+2. **Slice** the 512×448 indexed image into 32×28 super-tiles of
+   16×16 px (four 8×8 tiles each, in `TL, TR, BL, BR` order).
+3. **Dedupe with flips**: the tilemap word already has H/V-flip bits,
+   so super-tiles that are mirrors of already-seen super-tiles reuse
+   the same VRAM slots. Typical photographic content dedupes 4–5× even
+   after quantisation.
+4. **Dense-pack**: unique super-tile `k` lands at VRAM base index
+   `(k // 8) * 32 + (k % 8) * 2`, giving 8 super-tiles per pair of
+   tile-viewer rows (see `docs/AI-MODE-5-README.md` §3.2 / §9.4). A
+   reserved blank super-tile immediately follows the last unique one;
+   the four tilemap rows below the visible screen (`y = 28..31`) point
+   at it, matching the `BLANK_INDEX` convention used by the static
+   demos.
+5. **Emit** `palette.bin` (BGR555), `tiles.<bpp>bpp.chr` (dense-packed),
+   `tilemap.bin` (32×32 entries, palette-field `0`, flip bits set per
+   dedup result) and a 2× upscaled `preview.png`.
+
+Hard limits enforced in code:
+
+- 10-bit tile index (`0..1023`): if the dedup pass leaves too many
+  unique super-tiles to dense-pack inside that range, the tool aborts
+  with a clear message pointing at the culprit. Options are to reduce
+  colour count, use a less detail-heavy source, or split content
+  across BG1 and BG2.
+- `--bpp` defaults to 4 (BG1); `--bpp 2` is available for BG2 but
+  rarely looks good on photographic input.
 
 Entry points:
 
@@ -83,7 +138,9 @@ Entry points:
 - Data: `build/<target>/*` (generated, gitignored)
 - Linker config: `snes.cfg` (LoROM, HEADER at `$7FC0`, VECTORS at `$7FE0`)
 - Build: `Makefile`
-- Assets: `tools/gen_assets.py`
+- Assets: `tools/gen_assets.py` (static + image-based targets)
+- Image pre-processor: `tools/crop_image.py` (scale + crop + palette
+  reduce; usable standalone or imported by `gen_assets.py`)
 - Post-link: `tools/fix_checksum.py`
 
 ---
@@ -275,9 +332,15 @@ checksum fixer may need updating too.
 - The encoder is **one** function `tile_to_bitplanes(pixels, bpp)` — do
   not split it per bpp unless you also have non-trivial per-bpp logic.
 - Per-target data (palette + pixel art + output filename) lives in the
-  `TARGETS` dict in `gen_assets.py`. Adding a new target means adding a
-  new entry there, plus matching wiring in the `Makefile` and a new
-  `main_*.s` if it produces a new ROM.
+  `TARGETS` dict in `gen_assets.py`. Adding a new *static* target means
+  adding a new entry there, plus matching wiring in the `Makefile` and
+  a new `main_*.s` if it produces a new ROM.
+- `mode5_image` lives outside `TARGETS` because it is parameterised on
+  a `--source` path; its code path is separate (see
+  `generate_mode5_image` / `load_image_as_indexed` /
+  `dedupe_super_tiles` / `build_mode5_image_vram` /
+  `build_mode5_image_tilemap`) and reuses the shared primitives
+  (`tile_to_bitplanes`, `encode_palette`).
 
 ### Git
 

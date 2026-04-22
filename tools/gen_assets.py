@@ -34,18 +34,35 @@ Three independent targets:
        character therefore appears at half the physical size of the
        mode0 / mode1 previews; that is intentional.
 
+  mode5_image/ (or custom --name)
+    palette.bin       2bpp/4bpp palette (BGR555) derived from --source
+    tiles.2bpp.chr /  dense-packed, dedup'd (incl. H/V flips) 8x8 tiles
+      tiles.4bpp.chr    in the N, N+1, N+16, N+17 super-tile layout
+    tilemap.bin       32x32 BG1 tilemap covering the full 512x448 screen
+    preview.png       rebuilt 512x448 image (2x upscaled)
+    -> Expects a 512x448 source image. If --source is a JPG, a wrong
+       size, or not yet palette-reduced, the tool internally reuses the
+       crop_image pipeline (scale + center/left/right crop + palette
+       quantise with dithering) before slicing into tiles.
+
 Usage:
     python3 tools/gen_assets.py mode0_2bpp
     python3 tools/gen_assets.py mode1_4bpp
     python3 tools/gen_assets.py mode5_2bpp
     python3 tools/gen_assets.py all
+    python3 tools/gen_assets.py mode5_image --source PATH [--crop-align {left,center,right}]
+                                            [--bpp {2,4}] [--name NAME]
 """
 import argparse
+import sys
 from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from crop_image import scale_and_crop, reduce_palette  # noqa: E402
 
 BYTES_PER_TILE = {2: 16, 4: 32}
 PALETTE_COLORS = {2: 4, 4: 16}
@@ -517,17 +534,351 @@ def generate_target(name):
     ).save(target_dir / "preview.png")
 
 
+# ---------------------------------------------------------------------------
+# Image-based Mode 5 target (mode5_image)
+# ---------------------------------------------------------------------------
+#
+# Pipeline:
+#   1. Load source image (JPG/PNG). If size != 512x448 or color count
+#      exceeds 2**bpp, reuse crop_image.scale_and_crop + reduce_palette to
+#      coerce it into a 512x448 indexed image with <= 2**bpp colors.
+#   2. Slice into 32x28 super-tiles (each 16x16 px = 4 8x8 tiles in
+#      TL, TR, BL, BR order).
+#   3. Dedupe super-tiles across 4 flip variants (identity, H, V, HV);
+#      the tilemap word encodes H/V-flip for free, so mirrored regions
+#      of the image share VRAM slots.
+#   4. Dense-pack unique super-tiles: super-tile k -> VRAM base index
+#      (k // 8) * 32 + (k % 8) * 2 (see docs/AI-MODE-5-README.md 3.2 /
+#      9.4). After the last unique super-tile comes one reserved blank
+#      super-tile; empty tilemap cells (rows y >= 28) point at it.
+#   5. Emit palette.bin, tiles.<bpp>bpp.chr, tilemap.bin and preview.png.
+#
+# Defaults match section 7 of AI-MODE-5-README.md for BG1 4bpp.
+
+MODE5_IMAGE_TARGET = "mode5_image"
+MODE5_SCREEN_W, MODE5_SCREEN_H = 512, 448
+MODE5_SUPER_SIZE = 16
+MODE5_SUPER_COLS = MODE5_SCREEN_W // MODE5_SUPER_SIZE   # 32
+MODE5_SUPER_ROWS = MODE5_SCREEN_H // MODE5_SUPER_SIZE   # 28
+MAX_TILE_INDEX = 1023   # tilemap entry has a 10-bit tile index
+
+
+def rgb_to_bgr555(r, g, b):
+    r5 = min(31, (r * 31 + 127) // 255)
+    g5 = min(31, (g * 31 + 127) // 255)
+    b5 = min(31, (b * 31 + 127) // 255)
+    return (b5 << 10) | (g5 << 5) | r5
+
+
+def load_image_as_indexed(source_path, bpp, crop_align="center"):
+    """Return (pixels_2d, palette_bgr555) for a 512x448 image with <= 2**bpp
+    colors. Delegates to crop_image.scale_and_crop / reduce_palette when
+    the source isn't already the right shape and palette."""
+    max_colors = 1 << bpp
+    with Image.open(source_path) as im:
+        im.load()
+
+    # Coerce to 512x448.
+    if im.size != (MODE5_SCREEN_W, MODE5_SCREEN_H):
+        im = scale_and_crop(
+            im.convert("RGB"),
+            MODE5_SCREEN_W,
+            MODE5_SCREEN_H,
+            crop_align,
+        )
+
+    # Coerce color count. If already palette and within budget, keep it
+    # so the caller's existing palette survives; otherwise quantise.
+    need_quantise = True
+    if im.mode == "P" and im.getpalette() is not None:
+        _, hi = im.getextrema()
+        if hi < max_colors:
+            need_quantise = False
+    if need_quantise:
+        im = reduce_palette(im, bpp)
+
+    flat_palette = im.getpalette()[: max_colors * 3]
+    while len(flat_palette) < max_colors * 3:
+        flat_palette.append(0)
+    palette_bgr555 = [
+        rgb_to_bgr555(
+            flat_palette[i * 3],
+            flat_palette[i * 3 + 1],
+            flat_palette[i * 3 + 2],
+        )
+        for i in range(max_colors)
+    ]
+
+    w, h = im.size
+    px = im.load()
+    pixels = [[px[x, y] for x in range(w)] for y in range(h)]
+    return pixels, palette_bgr555
+
+
+def slice_super_tiles(pixels):
+    """Return a MODE5_SUPER_ROWS x MODE5_SUPER_COLS grid of super-tiles.
+
+    Each super-tile is [TL, TR, BL, BR], each entry an 8x8 pixel list."""
+    grid = []
+    for ty in range(MODE5_SUPER_ROWS):
+        row = []
+        for tx in range(MODE5_SUPER_COLS):
+            quads = []
+            for qy in range(2):
+                for qx in range(2):
+                    ox = tx * MODE5_SUPER_SIZE + qx * 8
+                    oy = ty * MODE5_SUPER_SIZE + qy * 8
+                    tile = [
+                        [pixels[oy + y][ox + x] for x in range(8)]
+                        for y in range(8)
+                    ]
+                    quads.append(tile)
+            row.append(quads)
+        grid.append(row)
+    return grid
+
+
+def _hflip_tile(tile):
+    return [list(reversed(r)) for r in tile]
+
+
+def _vflip_tile(tile):
+    return list(reversed(tile))
+
+
+def flip_super_tile(super_tile, hflip, vflip):
+    tl, tr, bl, br = super_tile
+    if hflip:
+        tl, tr = _hflip_tile(tr), _hflip_tile(tl)
+        bl, br = _hflip_tile(br), _hflip_tile(bl)
+    if vflip:
+        tl, bl = _vflip_tile(bl), _vflip_tile(tl)
+        tr, br = _vflip_tile(br), _vflip_tile(tr)
+    return [tl, tr, bl, br]
+
+
+def _super_tile_key(super_tile):
+    buf = bytearray()
+    for tile in super_tile:
+        for row in tile:
+            buf.extend(row)
+    return bytes(buf)
+
+
+def dedupe_super_tiles(grid):
+    """Return (unique, placements) with flip-aware dedup.
+
+    placements[ty][tx] = (unique_index, hflip, vflip). unique is a list
+    of super-tiles stored in their first-seen (unflipped) form."""
+    unique = []
+    key_to_index = {}
+    placements = []
+    for row in grid:
+        placement_row = []
+        for super_tile in row:
+            match = None
+            for hf in (0, 1):
+                for vf in (0, 1):
+                    flipped = flip_super_tile(super_tile, hf, vf)
+                    key = _super_tile_key(flipped)
+                    if key in key_to_index:
+                        match = (key_to_index[key], hf, vf)
+                        break
+                if match:
+                    break
+            if match is None:
+                idx = len(unique)
+                unique.append(super_tile)
+                key_to_index[_super_tile_key(super_tile)] = idx
+                match = (idx, 0, 0)
+            placement_row.append(match)
+        placements.append(placement_row)
+    return unique, placements
+
+
+def super_tile_vram_base(k):
+    """Dense-pack VRAM base index for super-tile k (8 super-tiles per
+    row-pair, each occupying slots N, N+1, N+16, N+17)."""
+    return (k // 8) * 32 + (k % 8) * 2
+
+
+def build_mode5_image_vram(unique_super_tiles, bpp, blank_index):
+    """Lay out VRAM tile bytes for all unique super-tiles plus one
+    reserved blank super-tile (at `blank_index`). Unused slots inside
+    the covered row-pairs are filled with zero tiles."""
+    total_supertiles = blank_index + 1
+    row_pairs = (total_supertiles + 7) // 8
+    total_tile_slots = row_pairs * 32
+    blank_tile = tile_to_bitplanes([[0] * 8 for _ in range(8)], bpp)
+    tiles = [blank_tile] * total_tile_slots
+
+    last_needed = super_tile_vram_base(blank_index) + 17
+    if last_needed > MAX_TILE_INDEX:
+        raise SystemExit(
+            f"mode5_image: {len(unique_super_tiles)} unique super-tiles "
+            f"(+1 blank) require tile index {last_needed}, but BG tilemap "
+            f"entries are capped at {MAX_TILE_INDEX}. Source has too much "
+            f"detail for a single 4bpp/2bpp BG1. Options: reduce colour "
+            f"count, use a source with more self-similarity, or split "
+            f"across multiple BG layers."
+        )
+
+    for k, super_tile in enumerate(unique_super_tiles):
+        base = super_tile_vram_base(k)
+        tiles[base] = tile_to_bitplanes(super_tile[0], bpp)
+        tiles[base + 1] = tile_to_bitplanes(super_tile[1], bpp)
+        tiles[base + 16] = tile_to_bitplanes(super_tile[2], bpp)
+        tiles[base + 17] = tile_to_bitplanes(super_tile[3], bpp)
+    # blank_index slot intentionally left as zero tiles.
+    return bytearray().join(tiles)
+
+
+def build_mode5_image_tilemap(placements, blank_index, palette_idx=0):
+    """Build the 32x32 BG1 tilemap covering the visible 32x28 super-tile
+    area; the 4 rows below the screen use the blank super-tile."""
+    palette_bits = (palette_idx & 0x7) << 10
+    blank_entry = super_tile_vram_base(blank_index) | palette_bits
+    tm = [blank_entry] * (32 * 32)
+    for ty, row in enumerate(placements):
+        for tx, (idx, hflip, vflip) in enumerate(row):
+            entry = super_tile_vram_base(idx) | palette_bits
+            if hflip:
+                entry |= 0x4000
+            if vflip:
+                entry |= 0x8000
+            tm[ty * 32 + tx] = entry
+    out = bytearray()
+    for e in tm:
+        out.append(e & 0xFF)
+        out.append((e >> 8) & 0xFF)
+    return out
+
+
+def build_image_preview(pixels, palette_bgr555, upscale=2):
+    """Render the deduplicated image back to a PNG for visual inspection."""
+    h = len(pixels)
+    w = len(pixels[0])
+    rgb = [bgr555_to_rgb(c) for c in palette_bgr555]
+    img = Image.new("RGB", (w, h))
+    px = img.load()
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = rgb[pixels[y][x]]
+    if upscale != 1:
+        img = img.resize((w * upscale, h * upscale), Image.NEAREST)
+    return img
+
+
+def _reconstruct_pixels(unique_super_tiles, placements):
+    """Reassemble the full 512x448 pixel grid from the deduped data; a
+    self-check that the dedupe+flip logic reproduces the input exactly."""
+    out = [[0] * MODE5_SCREEN_W for _ in range(MODE5_SCREEN_H)]
+    for ty, row in enumerate(placements):
+        for tx, (idx, hf, vf) in enumerate(row):
+            super_tile = flip_super_tile(unique_super_tiles[idx], hf, vf)
+            for qi, tile in enumerate(super_tile):
+                qx = qi % 2
+                qy = qi // 2
+                for y in range(8):
+                    for x in range(8):
+                        out[ty * 16 + qy * 8 + y][tx * 16 + qx * 8 + x] = (
+                            tile[y][x]
+                        )
+    return out
+
+
+def generate_mode5_image(source, bpp, crop_align, name):
+    if bpp not in BYTES_PER_TILE:
+        raise SystemExit(f"unsupported bpp {bpp}, must be 2 or 4")
+    source = Path(source)
+    if not source.is_file():
+        raise SystemExit(f"source image not found: {source}")
+
+    target_dir = BUILD / name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    pixels, palette_bgr555 = load_image_as_indexed(source, bpp, crop_align)
+    grid = slice_super_tiles(pixels)
+    unique_super_tiles, placements = dedupe_super_tiles(grid)
+
+    # Sanity check: reassembled image must equal the (quantised) input.
+    assert _reconstruct_pixels(unique_super_tiles, placements) == pixels, (
+        "dedupe round-trip mismatch"
+    )
+
+    blank_index = len(unique_super_tiles)
+    chr_name = f"tiles.{bpp}bpp.chr"
+
+    (target_dir / "palette.bin").write_bytes(encode_palette(palette_bgr555, bpp))
+    (target_dir / chr_name).write_bytes(
+        build_mode5_image_vram(unique_super_tiles, bpp, blank_index)
+    )
+    (target_dir / "tilemap.bin").write_bytes(
+        build_mode5_image_tilemap(placements, blank_index)
+    )
+    build_image_preview(pixels, palette_bgr555, upscale=2).save(
+        target_dir / "preview.png"
+    )
+
+    unique_count = len(unique_super_tiles)
+    tiles_used = super_tile_vram_base(blank_index) + 18  # inclusive of last slot
+    print(
+        f"mode5_image: {source} -> {target_dir}\n"
+        f"  super-tiles: {MODE5_SUPER_COLS * MODE5_SUPER_ROWS} total, "
+        f"{unique_count} unique after flip-dedup "
+        f"({unique_count * 100 / (MODE5_SUPER_COLS * MODE5_SUPER_ROWS):.1f}%)\n"
+        f"  VRAM tiles used: {tiles_used} / {MAX_TILE_INDEX + 1} "
+        f"({tiles_used * BYTES_PER_TILE[bpp]} bytes @ {bpp}bpp)\n"
+        f"  palette: {1 << bpp} colors ({1 << bpp} * 2 = "
+        f"{(1 << bpp) * 2} bytes)"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument(
         "target",
-        choices=list(TARGETS.keys()) + ["all"],
+        choices=list(TARGETS.keys()) + [MODE5_IMAGE_TARGET, "all"],
         help="which asset set to generate",
+    )
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        help=f"source image for {MODE5_IMAGE_TARGET} (JPG/PNG)",
+    )
+    parser.add_argument(
+        "--crop-align",
+        choices=("left", "center", "right"),
+        default="center",
+        help=(
+            "horizontal crop anchor when --source needs scaling to 512x448 "
+            f"(default: center; only used for {MODE5_IMAGE_TARGET})"
+        ),
+    )
+    parser.add_argument(
+        "--bpp",
+        type=int,
+        choices=(2, 4),
+        default=4,
+        help=f"bit depth for {MODE5_IMAGE_TARGET} (default: 4)",
+    )
+    parser.add_argument(
+        "--name",
+        default=MODE5_IMAGE_TARGET,
+        help=(
+            f"output directory name under build/ for {MODE5_IMAGE_TARGET} "
+            f"(default: {MODE5_IMAGE_TARGET})"
+        ),
     )
     args = parser.parse_args()
 
     BUILD.mkdir(exist_ok=True)
-    if args.target == "all":
+    if args.target == MODE5_IMAGE_TARGET:
+        if args.source is None:
+            parser.error(f"--source is required for {MODE5_IMAGE_TARGET}")
+        generate_mode5_image(args.source, args.bpp, args.crop_align, args.name)
+    elif args.target == "all":
         for name in TARGETS:
             generate_target(name)
     else:
