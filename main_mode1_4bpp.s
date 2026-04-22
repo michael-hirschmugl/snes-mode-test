@@ -244,13 +244,13 @@ ZeroWord:
     .word $0000
 
 PaletteData:
-    .incbin "build/palette.bin"
+    .incbin "build/mode1_4bpp/palette.bin"
 
 TileData:
-    .incbin "build/tiles.4bpp.chr"
+    .incbin "build/mode1_4bpp/tiles.4bpp.chr"
 
 TilemapData:
-    .incbin "build/tilemap.bin"
+    .incbin "build/mode1_4bpp/tilemap.bin"
 
 .segment "HEADER"
     ; 21-byte internal title
