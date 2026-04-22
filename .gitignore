@@ -16,3 +16,10 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# WSL / Windows metadata sidecars
+*:Zone.Identifier
+
+# Private image sources and any derivatives (never commit the source
+# photo used to produce personal mode1_image / mode5_image ROMs).
+assets/DSC*

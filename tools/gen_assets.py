@@ -834,11 +834,221 @@ def generate_mode5_image(source, bpp, crop_align, name):
     )
 
 
+# ---------------------------------------------------------------------------
+# Image-based Mode 1 target (mode1_image)
+# ---------------------------------------------------------------------------
+#
+# Full-screen 256x224 background for Mode 1 BG1 (4bpp, 8x8 tiles). Unlike
+# the Mode 5 pipeline this uses PLAIN 8x8 tiles (no 16x16 super-tiles),
+# which fits the Mode 1 BG layout directly. A 256x224 screen = 32x28 =
+# 896 cells, well inside the 10-bit (1024) tilemap index limit, so fully
+# unique images are representable on BG1 alone (modulo flip-dedup to save
+# VRAM / ROM bytes).
+#
+# Pipeline:
+#   1. Load source image; coerce to 256x224 via crop_image.scale_and_crop
+#      if it isn't already that size.
+#   2. Quantise to 2**bpp colors if needed (same helper as mode5_image).
+#   3. Slice into 8x8 tiles, dedupe across 4 flip variants (identity,
+#      H, V, HV). Tilemap entries encode H/V flip for free.
+#   4. Emit palette.bin, tiles.<bpp>bpp.chr (dense, no blank padding),
+#      tilemap.bin (32x32 entries, 32x28 visible + blank rows), and
+#      preview.png (1x, 256x224).
+#
+# Notes:
+# - bpp defaults to 4 because Mode 1 BG1 is 4bpp. bpp=2 is allowed for
+#   Mode 1 BG3-style experiments, but the generated tilemap assumes
+#   palette 0 and is layer-agnostic beyond that.
+
+MODE1_IMAGE_TARGET = "mode1_image"
+MODE1_SCREEN_W, MODE1_SCREEN_H = 256, 224
+MODE1_TILE_SIZE = 8
+MODE1_TILE_COLS = MODE1_SCREEN_W // MODE1_TILE_SIZE   # 32
+MODE1_TILE_ROWS = MODE1_SCREEN_H // MODE1_TILE_SIZE   # 28
+
+
+def load_image_as_indexed_generic(source_path, bpp, width, height, crop_align):
+    """Like load_image_as_indexed but for arbitrary target size."""
+    max_colors = 1 << bpp
+    with Image.open(source_path) as im:
+        im.load()
+    if im.size != (width, height):
+        im = scale_and_crop(im.convert("RGB"), width, height, crop_align)
+    need_quantise = True
+    if im.mode == "P" and im.getpalette() is not None:
+        _, hi = im.getextrema()
+        if hi < max_colors:
+            need_quantise = False
+    if need_quantise:
+        im = reduce_palette(im, bpp)
+    flat_palette = im.getpalette()[: max_colors * 3]
+    while len(flat_palette) < max_colors * 3:
+        flat_palette.append(0)
+    palette_bgr555 = [
+        rgb_to_bgr555(
+            flat_palette[i * 3],
+            flat_palette[i * 3 + 1],
+            flat_palette[i * 3 + 2],
+        )
+        for i in range(max_colors)
+    ]
+    w, h = im.size
+    px = im.load()
+    pixels = [[px[x, y] for x in range(w)] for y in range(h)]
+    return pixels, palette_bgr555
+
+
+def _tile_key(tile):
+    buf = bytearray()
+    for row in tile:
+        buf.extend(row)
+    return bytes(buf)
+
+
+def dedupe_tiles_8x8(pixels):
+    """Flip-dedup all 8x8 tiles in `pixels`.
+
+    Returns (unique_tiles, placements). placements[ty][tx] = (index, hflip,
+    vflip) for the tile at cell (tx, ty). unique_tiles is a list of 8x8
+    pixel grids (stored in their first-seen orientation)."""
+    rows = len(pixels) // 8
+    cols = len(pixels[0]) // 8
+    unique = []
+    key_to_index = {}
+    placements = []
+    for ty in range(rows):
+        placement_row = []
+        for tx in range(cols):
+            tile = [
+                [pixels[ty * 8 + y][tx * 8 + x] for x in range(8)]
+                for y in range(8)
+            ]
+            match = None
+            for hf in (0, 1):
+                for vf in (0, 1):
+                    flipped = tile
+                    if hf:
+                        flipped = [list(reversed(r)) for r in flipped]
+                    if vf:
+                        flipped = list(reversed(flipped))
+                    key = _tile_key(flipped)
+                    if key in key_to_index:
+                        match = (key_to_index[key], hf, vf)
+                        break
+                if match:
+                    break
+            if match is None:
+                idx = len(unique)
+                unique.append(tile)
+                key_to_index[_tile_key(tile)] = idx
+                match = (idx, 0, 0)
+            placement_row.append(match)
+        placements.append(placement_row)
+    return unique, placements
+
+
+def build_mode1_image_vram(unique_tiles, bpp):
+    """Dense-pack unique 8x8 tiles as one CHR blob (no padding)."""
+    out = bytearray()
+    for tile in unique_tiles:
+        out.extend(tile_to_bitplanes(tile, bpp))
+    return out
+
+
+def build_mode1_image_tilemap(placements, palette_idx=0):
+    """Build a 32x32 BG1 tilemap for a 32x28 image placement.
+
+    Rows 28..31 are filled with tile index 0 (which is part of the dense
+    tile set; always drawn but sits below the visible 224-line area)."""
+    palette_bits = (palette_idx & 0x7) << 10
+    tm = [palette_bits] * (32 * 32)  # index 0, no flip
+    for ty, row in enumerate(placements):
+        for tx, (idx, hflip, vflip) in enumerate(row):
+            entry = (idx & 0x3FF) | palette_bits
+            if hflip:
+                entry |= 0x4000
+            if vflip:
+                entry |= 0x8000
+            tm[ty * 32 + tx] = entry
+    out = bytearray()
+    for e in tm:
+        out.append(e & 0xFF)
+        out.append((e >> 8) & 0xFF)
+    return out
+
+
+def _reconstruct_pixels_8x8(unique_tiles, placements, width, height):
+    out = [[0] * width for _ in range(height)]
+    for ty, row in enumerate(placements):
+        for tx, (idx, hf, vf) in enumerate(row):
+            tile = unique_tiles[idx]
+            if hf:
+                tile = [list(reversed(r)) for r in tile]
+            if vf:
+                tile = list(reversed(tile))
+            for y in range(8):
+                for x in range(8):
+                    out[ty * 8 + y][tx * 8 + x] = tile[y][x]
+    return out
+
+
+def generate_mode1_image(source, bpp, crop_align, name):
+    if bpp not in BYTES_PER_TILE:
+        raise SystemExit(f"unsupported bpp {bpp}, must be 2 or 4")
+    source = Path(source)
+    if not source.is_file():
+        raise SystemExit(f"source image not found: {source}")
+
+    target_dir = BUILD / name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    pixels, palette_bgr555 = load_image_as_indexed_generic(
+        source, bpp, MODE1_SCREEN_W, MODE1_SCREEN_H, crop_align
+    )
+    unique_tiles, placements = dedupe_tiles_8x8(pixels)
+
+    assert _reconstruct_pixels_8x8(
+        unique_tiles, placements, MODE1_SCREEN_W, MODE1_SCREEN_H
+    ) == pixels, "mode1_image dedupe round-trip mismatch"
+
+    if len(unique_tiles) > MAX_TILE_INDEX + 1:
+        raise SystemExit(
+            f"mode1_image: {len(unique_tiles)} unique 8x8 tiles exceed the "
+            f"10-bit tilemap index limit ({MAX_TILE_INDEX + 1}). Reduce "
+            f"colour count or detail."
+        )
+
+    chr_name = f"tiles.{bpp}bpp.chr"
+    (target_dir / "palette.bin").write_bytes(encode_palette(palette_bgr555, bpp))
+    (target_dir / chr_name).write_bytes(
+        build_mode1_image_vram(unique_tiles, bpp)
+    )
+    (target_dir / "tilemap.bin").write_bytes(
+        build_mode1_image_tilemap(placements)
+    )
+    # 1:1 preview so the pixels match the on-screen resolution.
+    build_image_preview(pixels, palette_bgr555, upscale=1).save(
+        target_dir / "preview.png"
+    )
+
+    tile_bytes = len(unique_tiles) * BYTES_PER_TILE[bpp]
+    print(
+        f"mode1_image: {source} -> {target_dir}\n"
+        f"  tiles: {MODE1_TILE_COLS * MODE1_TILE_ROWS} total, "
+        f"{len(unique_tiles)} unique after flip-dedup "
+        f"({len(unique_tiles) * 100 / (MODE1_TILE_COLS * MODE1_TILE_ROWS):.1f}%)\n"
+        f"  CHR bytes: {tile_bytes} ({tile_bytes / 1024:.1f} KiB) "
+        f"@ {bpp}bpp, {len(unique_tiles)} / {MAX_TILE_INDEX + 1} indices used\n"
+        f"  palette: {1 << bpp} colors ({(1 << bpp) * 2} bytes)"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument(
         "target",
-        choices=list(TARGETS.keys()) + [MODE5_IMAGE_TARGET, "all"],
+        choices=list(TARGETS.keys())
+        + [MODE5_IMAGE_TARGET, MODE1_IMAGE_TARGET, "all"],
         help="which asset set to generate",
     )
     parser.add_argument(
@@ -878,6 +1088,11 @@ def main():
         if args.source is None:
             parser.error(f"--source is required for {MODE5_IMAGE_TARGET}")
         generate_mode5_image(args.source, args.bpp, args.crop_align, args.name)
+    elif args.target == MODE1_IMAGE_TARGET:
+        if args.source is None:
+            parser.error(f"--source is required for {MODE1_IMAGE_TARGET}")
+        name = args.name if args.name != MODE5_IMAGE_TARGET else MODE1_IMAGE_TARGET
+        generate_mode1_image(args.source, args.bpp, args.crop_align, name)
     elif args.target == "all":
         for name in TARGETS:
             generate_target(name)

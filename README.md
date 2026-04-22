@@ -14,14 +14,17 @@ that show how to:
   `mode5_4bpp` / wallpaper demo).
 
 The project ships four complete builds that differ in BG mode, tile
-format, tile size and screen resolution:
+format, tile size and screen resolution, plus one opt-in build that
+turns an arbitrary user-supplied image into a full-screen Mode 1
+background:
 
-| ROM                                  | Mode   | BG used | Tile format | BG tile size  | Display    | Contents                | Extras             |
-| ------------------------------------ | ------ | ------- | ----------- | ------------- | ---------- | ----------------------- | ------------------ |
-| `build/mode1_pal_demo.sfc`           | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)    | —                  |
-| `build/mode0_pal_demo.sfc`           | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)    | —                  |
-| `build/mode5_pal_demo.sfc`           | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch)  | 512×448    | 4 characters (corners)  | hi-res + interlace |
-| `build/mode5_wallpaper_pal_demo.sfc` | Mode 5 | BG1     | 4bpp        | 16×16 (dense) | 512×448    | full-screen wallpaper   | hi-res + interlace |
+| ROM                                  | Mode   | BG used | Tile format | BG tile size  | Display    | Contents                       | Extras             |
+| ------------------------------------ | ------ | ------- | ----------- | ------------- | ---------- | ------------------------------ | ------------------ |
+| `build/mode1_pal_demo.sfc`           | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)           | —                  |
+| `build/mode0_pal_demo.sfc`           | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)           | —                  |
+| `build/mode5_pal_demo.sfc`           | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch)  | 512×448    | 4 characters (corners)         | hi-res + interlace |
+| `build/mode5_wallpaper_pal_demo.sfc` | Mode 5 | BG1     | 4bpp        | 16×16 (dense) | 512×448    | full-screen wallpaper (Tux)    | hi-res + interlace |
+| `build/mode1_image_pal_demo.sfc` *(opt-in)* | Mode 1 | BG1 | 4bpp   | 8×8 (dense)   | 256×224    | full-screen user image         | —                  |
 
 All ROMs target **LoROM / PAL** consoles, run in `bsnes` / `bsnes-plus` and
 boot on real hardware (e.g. via a flash cart).
@@ -52,6 +55,7 @@ main_mode1_4bpp.s      # 65816 asm: Mode 1, 4bpp BG1 demo
 main_mode0_2bpp.s      # 65816 asm: Mode 0, 2bpp BG1 demo
 main_mode5_2bpp.s      # 65816 asm: Mode 5, 2bpp BG2 demo (16x16 tiles, interlace)
 main_mode5_4bpp.s      # 65816 asm: Mode 5, 4bpp BG1 full-screen wallpaper (16x16 tiles, interlace)
+main_mode1_image_4bpp.s # 65816 asm: Mode 1, 4bpp BG1 full-screen image (opt-in; reads build/mode1_image/)
 snes.cfg               # ld65 memory/segment config (LoROM, shared)
 Makefile               # builds all four ROMs
 assets/
@@ -91,6 +95,11 @@ build/
                        # (currently 768 8x8 slots x 32 bytes = 24576 bytes)
     tilemap.bin        # 32x32 BG1 tilemap; 32x28 visible entries + blank padding
     preview.png        # expected picture for 512x448 (2x upscaled, after dedup)
+  mode1_image/         # opt-in, produced by `make mode1_image_demo ...`
+    palette.bin        # 4bpp palette derived from the user-supplied image
+    tiles.4bpp.chr     # dense-packed 8x8 tiles after flip-dedup (variable size)
+    tilemap.bin        # 32x32 BG1 tilemap, 32x28 visible entries
+    preview.png        # 1:1 preview of the quantised 256x224 image
 ```
 
 ## Requirements
@@ -267,11 +276,63 @@ different `tilemap.bin` (plus a 512×448 preview). The `Makefile`
 invokes the script once per target, so `make` only regenerates the
 asset set that is out of date.
 
-#### `mode5_image` — full-screen backgrounds from a PNG / JPG
+## Full-screen image pipelines
 
-On top of the static targets, `gen_assets.py` also hosts a
-**dynamic** `mode5_image` pipeline that turns any JPG/PNG into a
-dense-packed, flip-dedup'd, full-screen Mode 5 background:
+`gen_assets.py` has two **dynamic** pipelines that turn arbitrary
+JPG/PNG images into ready-to-play SNES assets. Both produce the same
+`{palette.bin, tiles.<bpp>bpp.chr, tilemap.bin, preview.png}` quartet
+under `build/<name>/`; the difference is the BG layout they target and
+therefore which kinds of images they can represent.
+
+Pick the pipeline by answering one question: **how unique is the
+image?**
+
+- If the image has lots of repetition or is low-detail (tile-art
+  wallpaper, pixel art, UI screens, logos), use `mode5_image` — you
+  get the full 512×448 hi-res canvas.
+- If every 16×16 region is different (photos, realistic artwork),
+  use `mode1_image` — you trade the hi-res canvas for 256×224 but
+  can display fully-unique content.
+
+### Why Mode 5 has a hard limit for "every region different"
+
+This is a hardware constraint, not a tool limitation. Two SNES budgets
+apply to every BG layer:
+
+1. **Tilemap index width is 10 bits per entry (`0..1023`)**. A BG can
+   reference at most 1024 distinct 8×8 VRAM tiles via its tilemap,
+   regardless of VRAM size.
+2. **VRAM is 64 KiB total** and must hold tile data + tilemap(s) +
+   anything else the PPU reads. At 4bpp a tile is 32 bytes, so
+   1024 unique tiles = 32 KiB.
+
+Apply this to a **fully unique** full-screen background:
+
+|                        | Mode 1 (256×224, BG1 8×8, 4bpp) | Mode 5 hi-res + interlace (512×448, BG1 4bpp) |
+| ---------------------- | ------------------------------: | --------------------------------------------: |
+| screen in 8×8 tiles    | 32 × 28 = **896** tiles         | 64 × 56 = **3584** tiles                      |
+| screen in 16×16 blocks | — (Mode 1 uses 8×8)             | 32 × 28 = 896 super-tiles × 4 = 3584 8×8 tiles |
+| 10-bit index limit     | 896 ≤ 1024 ✅                    | 3584 ≫ 1024 ❌                                 |
+| 4bpp VRAM needed       | 896 × 32 B = 28 KiB ✅           | 3584 × 32 B = 112 KiB ❌ (> 64 KiB VRAM)      |
+
+Consequence: **a fully unique 512×448 image cannot be shown on a
+single Mode 5 BG layer.** Real Mode 5 backgrounds always rely on
+visual repetition (patterns, symmetry, tile reuse) plus the
+flip-dedup bits in the tilemap word; they don't try to store every
+region independently. `mode5_image` reflects this — it aborts with
+a clear message when the deduped super-tile count overflows the
+10-bit index budget.
+
+A fully unique **256×224** image, on the other hand, fits comfortably
+on Mode 1 BG1 with room to spare: 896 tiles is below the 1024-index
+limit and 28 KiB of tile data leaves ~36 KiB of VRAM free for the
+tilemap and other state. That's what `mode1_image` exploits.
+
+### `mode5_image` — full-screen Mode 5 background from a PNG / JPG
+
+The `mode5_image` target (`gen_assets.py mode5_image`) targets **BG1
+in Mode 5** with 16×16 tile size (BGMODE bit 4) at 512×448 hi-res +
+interlace. It is the pipeline that feeds `mode5_wallpaper_pal_demo.sfc`.
 
 ```bash
 python3 tools/gen_assets.py mode5_image \
@@ -280,17 +341,99 @@ python3 tools/gen_assets.py mode5_image \
     --name mode5_wallpaper_4bpp
 ```
 
-The tool scales + crops + palette-quantises the source (via
-`tools/crop_image.py`), slices it into 32×28 super-tiles, dedupes them
-across identity / H / V / HV flips, dense-packs the unique super-tiles
-into VRAM at `(k // 8) * 32 + (k % 8) * 2`, and emits
-`build/<name>/{palette.bin, tiles.<bpp>bpp.chr, tilemap.bin, preview.png}`.
-This is the pipeline that feeds the `mode5_wallpaper_pal_demo.sfc`
-ROM; the `Makefile` drives it automatically with the 4bpp wallpaper
-source and wires the output into `main_mode5_4bpp.s`.
+Steps:
 
-8bpp (Mode 3/4 BG1) is **not** supported; add a new branch in
-`tile_to_bitplanes` if you need it.
+1. Scale + crop + palette-quantise the source to a 512×448 indexed
+   image with `2**bpp` colours (via `tools/crop_image.py`,
+   Median-Cut + Floyd–Steinberg dithering).
+2. Slice into 32 × 28 = 896 **16×16 super-tiles** (each super-tile
+   is 4 × 8×8 tiles in `TL, TR, BL, BR` order).
+3. Dedupe across identity / H / V / HV flips — the tilemap word
+   already encodes H/V flip bits, so mirrored regions reuse the same
+   VRAM slot "for free".
+4. Dense-pack unique super-tile `k` at VRAM base index
+   `(k // 8) * 32 + (k % 8) * 2`, so 8 super-tiles share every pair
+   of tile-viewer rows. A reserved blank super-tile follows the last
+   unique one and is referenced by the 4 off-screen tilemap rows
+   (`y = 28..31`).
+5. Emit `palette.bin` (BGR555), `tiles.<bpp>bpp.chr`, `tilemap.bin`
+   (flip bits set per dedup result) and a 2× upscaled `preview.png`.
+
+If the dedupe still leaves more unique super-tiles than the 10-bit
+index budget allows, the tool aborts with a diagnostic that prints
+the actually needed index vs. the 1023 limit. In that case either
+reduce colour count, use a less detail-heavy source, switch to
+`mode1_image`, or split the image across multiple BG layers.
+
+The Makefile's `MODE5_WALLPAPER_ASSETS` rule wires
+`assets/linux_wallpaper_512x448_right_4bpp.png` through this pipeline
+automatically and embeds the result into `main_mode5_4bpp.s`.
+
+### `mode1_image` — full-screen Mode 1 background from a PNG / JPG
+
+The `mode1_image` target (`gen_assets.py mode1_image`) targets
+**BG1 in Mode 1** with 8×8 tile size at 256×224 standard resolution.
+Because each tilemap entry is one 8×8 tile (no 16×16 auto-read
+grouping) and the screen fits in 896 tiles, a fully unique photo or
+painting is representable as long as the flip-dedup + quantise stage
+stays below the 1024-index budget.
+
+```bash
+python3 tools/gen_assets.py mode1_image \
+    --source path/to/your_image.jpg \
+    --bpp 4 \
+    --crop-align center \
+    --name mode1_image
+```
+
+Steps:
+
+1. Scale + crop + palette-quantise to a 256×224 indexed image.
+2. Slice into 32 × 28 = 896 plain **8×8 tiles**.
+3. Dedupe across identity / H / V / HV flips.
+4. Dense-pack (no `N, N+1, N+16, N+17` grouping — in 8×8-tile mode
+   each tilemap entry is one 8×8 tile index).
+5. Emit `palette.bin`, `tiles.<bpp>bpp.chr` (dense, no padding),
+   `tilemap.bin` and a 1:1 `preview.png`.
+
+Typical photographic input quantised to 16 colours keeps ~700–900
+unique tiles out of 896 — well inside the 1024-index / 32 KiB 4bpp
+VRAM budget.
+
+The ASM wrapper `main_mode1_image_4bpp.s` embeds these files via
+`.incbin` and computes the tile DMA size dynamically from a pair of
+labels (`TileDataEnd - TileData`), so the same source works for any
+resulting tile count. It places tile data at VRAM word `$0000` and
+the tilemap at word `$3000` (`BG1SC = $30`), specifically so the two
+regions stay disjoint even with the maximum ~24 KiB of tile data
+that a fully-packed BG1 4bpp Mode 1 image can produce.
+
+Because the source image is a user asset (photo, personal artwork,
+etc.) and generally shouldn't be committed, this ROM is **opt-in**
+and not built by `make` / `make all`. To build it against your own
+image:
+
+```bash
+# one-shot build
+make mode1_image_demo MODE1_IMAGE_SRC=path/to/your_image.jpg
+
+# or manually:
+python3 tools/gen_assets.py mode1_image \
+    --source path/to/your_image.jpg \
+    --bpp 4 \
+    --crop-align center \
+    --name mode1_image
+ca65 -t none -o build/main_mode1_image_4bpp.o main_mode1_image_4bpp.s
+ld65 -C snes.cfg -o build/mode1_image_pal_demo.sfc build/main_mode1_image_4bpp.o
+python3 tools/fix_checksum.py build/mode1_image_pal_demo.sfc
+```
+
+Source images are expected to live outside the repo or under an
+ignored path (the top-level `.gitignore` already excludes
+`assets/DSC*` so imported photos don't sneak in via `git add .`).
+
+8bpp (Mode 3/4 BG1) is **not** supported by either pipeline; add a
+new branch in `tile_to_bitplanes` if you need it.
 
 ## Further reading
 
