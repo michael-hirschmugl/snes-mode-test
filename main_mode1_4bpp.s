@@ -8,8 +8,9 @@
 ; - BG1 only (4bpp tiles, 16-color palette)
 ; - Shows one 16x16 character made from four 4bpp 8x8 tiles
 ;
-; NOTE: All BG assets in this demo are 4bpp only. In Mode 1, BG1 and BG2
-; are 4bpp, BG3 would be 2bpp. This project does not ship 2bpp assets.
+; NOTE: This demo uses 4bpp assets only (16-color palette, indices 0..15).
+; In Mode 1, BG1 and BG2 are 4bpp, BG3 would be 2bpp. The mode 0 demo in
+; this project ships its own separate 2bpp asset set under build/mode0_2bpp/.
 ; ------------------------------------------------------------
 
 INIDISP   = $2100

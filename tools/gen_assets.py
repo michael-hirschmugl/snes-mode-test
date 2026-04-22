@@ -2,23 +2,29 @@
 """
 SNES asset generator (supports 2bpp and 4bpp BG tile formats).
 
-Produces two asset sets:
+Two independent targets:
 
-  build/mode1_4bpp/
-    palette.bin       16-color 4bpp palette, 32 bytes (BGR555)
-    tiles.4bpp.chr    4bpp tile data, 32 bytes per 8x8 tile
-    tilemap.bin       32x32 BG1 tilemap (2-byte entries, format-agnostic)
-    preview.png       expected screen preview (256x224, 3x upscaled)
-
-  build/mode0_2bpp/
+  mode0_2bpp/
     palette.bin       4-color 2bpp palette, 8 bytes (BGR555)
     tiles.2bpp.chr    2bpp tile data, 16 bytes per 8x8 tile
     tilemap.bin       32x32 BG1 tilemap (2-byte entries, format-agnostic)
     preview.png       expected screen preview (256x224, 3x upscaled)
+    -> character uses palette indices 0..3 only (fits a 2bpp palette).
 
-The pixel art source uses palette indices 0..3 only, so it fits both 2bpp
-(indices 0..3) and 4bpp (indices 0..15) encoders without modification.
+  mode1_4bpp/
+    palette.bin       16-color 4bpp palette, 32 bytes (BGR555)
+    tiles.4bpp.chr    4bpp tile data, 32 bytes per 8x8 tile
+    tilemap.bin       32x32 BG1 tilemap (2-byte entries, format-agnostic)
+    preview.png       expected screen preview (256x224, 3x upscaled)
+    -> character uses ALL 16 palette indices (4x4 grid of 4x4 colored
+       blocks) so the 4bpp path actually exercises 16 colors.
+
+Usage:
+    python3 tools/gen_assets.py mode0_2bpp
+    python3 tools/gen_assets.py mode1_4bpp
+    python3 tools/gen_assets.py all
 """
+import argparse
 from pathlib import Path
 from PIL import Image
 
@@ -28,15 +34,35 @@ BUILD = ROOT / "build"
 BYTES_PER_TILE = {2: 16, 4: 32}
 PALETTE_COLORS = {2: 4, 4: 16}
 
-# Shared character design (values 0..3).
 CHAR_W, CHAR_H = 16, 16
 
-# Shared palette: we keep it to 4 colors so the same data works for both bpp.
-PALETTE_BGR555 = [
-    0x0000,  # 0 background, black
-    0x7FFF,  # 1 border, white
-    0x03E0,  # 2 cross, green
-    0x7C00,  # 3 center, red
+# 4-color palette used by the 2bpp / Mode 0 target.
+PALETTE_2BPP_BGR555 = [
+    0x0000,  # 0 background (black)
+    0x7FFF,  # 1 border     (white)
+    0x03E0,  # 2 cross      (green)
+    0x7C00,  # 3 center     (blue)
+]
+
+# 16-color palette used by the 4bpp / Mode 1 target. Each entry is a
+# distinct BGR555 color so all 16 slots are visibly different on screen.
+PALETTE_4BPP_BGR555 = [
+    0x0000,  # 0  black (also tilemap background)
+    0x7FFF,  # 1  white
+    0x001F,  # 2  red
+    0x01FF,  # 3  orange       (R=31, G=15)
+    0x03FF,  # 4  yellow
+    0x03E0,  # 5  green
+    0x7FE0,  # 6  cyan
+    0x7C00,  # 7  blue
+    0x7C1F,  # 8  magenta
+    0x7C0F,  # 9  purple       (R=15, B=31)
+    0x000F,  # 10 dark red     (R=15)
+    0x01E0,  # 11 dark green   (G=15)
+    0x3C00,  # 12 dark blue    (B=15)
+    0x4210,  # 13 dark grey    (R=G=B=16)
+    0x6318,  # 14 light grey   (R=G=B=24)
+    0x014F,  # 15 brown        (R=15, G=10)
 ]
 
 # 2x2 tile character placement on the BG1 tilemap.
@@ -52,8 +78,13 @@ CHAR_BR_INDEX = 17
 TILES_TO_UPLOAD = 18
 
 
-def render_character_pixels():
-    """Return a 16x16 pixel array using only palette indices 0..3."""
+def render_2bpp_character_pixels():
+    """16x16 pixel art using only palette indices 0..3 (fits a 2bpp palette).
+
+    - border of color 1
+    - cross through the center in color 2
+    - 4x4 center block in color 3
+    """
     pixels = [[0 for _ in range(CHAR_W)] for _ in range(CHAR_H)]
     for y in range(CHAR_H):
         for x in range(CHAR_W):
@@ -64,6 +95,22 @@ def render_character_pixels():
     for y in range(6, 10):
         for x in range(6, 10):
             pixels[y][x] = 3
+    return pixels
+
+
+def render_4bpp_character_pixels():
+    """16x16 pixel art that uses ALL 16 palette indices (0..15).
+
+    The tile is divided into a 4x4 grid of 4x4 colored blocks. Block
+    (bx, by) paints palette index `by * 4 + bx`, so every 4bpp palette
+    slot shows up as a visible 4x4 patch on screen.
+    """
+    pixels = [[0 for _ in range(CHAR_W)] for _ in range(CHAR_H)]
+    for y in range(CHAR_H):
+        for x in range(CHAR_W):
+            block_y = y // 4
+            block_x = x // 4
+            pixels[y][x] = block_y * 4 + block_x
     return pixels
 
 
@@ -167,9 +214,11 @@ def bgr555_to_rgb(c):
     return (r, g, b)
 
 
-def build_preview(pixels, palette_bgr555):
+def build_preview(pixels, palette_bgr555, bpp):
+    """Render a 256x224 preview of what the ROM should show, upscaled 3x."""
+    slots = PALETTE_COLORS[bpp]
     rgb = [bgr555_to_rgb(c) for c in palette_bgr555]
-    while len(rgb) < 4:
+    while len(rgb) < slots:
         rgb.append((0, 0, 0))
     img = Image.new("RGB", (256, 224), rgb[0])
     origin_x = CHAR_TILE_X * 8
@@ -180,28 +229,62 @@ def build_preview(pixels, palette_bgr555):
     return img.resize((256 * 3, 224 * 3), Image.NEAREST)
 
 
-def generate_target(name, bpp, chr_name):
+# ---------------------------------------------------------------------------
+# Target registry
+# ---------------------------------------------------------------------------
+
+TARGETS = {
+    "mode0_2bpp": {
+        "bpp": 2,
+        "chr_name": "tiles.2bpp.chr",
+        "palette": PALETTE_2BPP_BGR555,
+        "render_pixels": render_2bpp_character_pixels,
+    },
+    "mode1_4bpp": {
+        "bpp": 4,
+        "chr_name": "tiles.4bpp.chr",
+        "palette": PALETTE_4BPP_BGR555,
+        "render_pixels": render_4bpp_character_pixels,
+    },
+}
+
+
+def generate_target(name):
+    spec = TARGETS[name]
+    bpp = spec["bpp"]
+    chr_name = spec["chr_name"]
+    palette = spec["palette"]
+    pixels = spec["render_pixels"]()
+
     target_dir = BUILD / name
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    pixels = render_character_pixels()
     character_tiles = split_character_tiles(pixels, bpp)
     blank_tile = tile_to_bitplanes([[0] * 8 for _ in range(8)], bpp)
 
-    (target_dir / "palette.bin").write_bytes(
-        encode_palette(PALETTE_BGR555, bpp)
-    )
+    (target_dir / "palette.bin").write_bytes(encode_palette(palette, bpp))
     (target_dir / chr_name).write_bytes(
         build_vram_tiles(character_tiles, blank_tile)
     )
     (target_dir / "tilemap.bin").write_bytes(build_tilemap())
-    build_preview(pixels, PALETTE_BGR555).save(target_dir / "preview.png")
+    build_preview(pixels, palette, bpp).save(target_dir / "preview.png")
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "target",
+        choices=list(TARGETS.keys()) + ["all"],
+        help="which asset set to generate",
+    )
+    args = parser.parse_args()
+
     BUILD.mkdir(exist_ok=True)
-    generate_target("mode1_4bpp", bpp=4, chr_name="tiles.4bpp.chr")
-    generate_target("mode0_2bpp", bpp=2, chr_name="tiles.2bpp.chr")
+    if args.target == "all":
+        for name in TARGETS:
+            generate_target(name)
+    else:
+        generate_target(args.target)
 
 
 if __name__ == "__main__":

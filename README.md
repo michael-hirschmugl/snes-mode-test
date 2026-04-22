@@ -129,12 +129,25 @@ named without a bit-depth qualifier.
 
 ### Asset generator (`tools/gen_assets.py`)
 
-`gen_assets.py` is now generic over bit depth. It defines a single
-`tile_to_bitplanes(pixels, bpp)` encoder that handles both the 2bpp
+`gen_assets.py` is generic over bit depth: a single
+`tile_to_bitplanes(pixels, bpp)` encoder handles both the 2bpp
 (16 bytes/tile, planes 0..1) and 4bpp (32 bytes/tile, planes 0..3)
-SNES tile formats. One run produces both asset sets — `build/mode1_4bpp/`
-and `build/mode0_2bpp/` — from the same 16x16 pixel source, which uses
-palette indices 0..3 only so it fits both encoders.
+SNES tile formats.
+
+The script takes the target as a CLI argument and writes exactly one
+asset set per invocation:
+
+```bash
+python3 tools/gen_assets.py mode0_2bpp   # 4-color palette, indices 0..3
+python3 tools/gen_assets.py mode1_4bpp   # 16-color palette, indices 0..15
+python3 tools/gen_assets.py all          # regenerate both
+```
+
+Each target has its **own** palette and pixel art, so the 2bpp build
+stays within its 4 palette slots while the 4bpp build actually exercises
+all 16 slots (the character is rendered as a 4×4 grid of 4×4 colored
+blocks, one per palette index). The `Makefile` invokes the script once
+per target, so `make` only regenerates the asset set that is out of date.
 
 8bpp (Mode 3/4 BG1) is **not** supported; add a new branch in
 `tile_to_bitplanes` if you need it.

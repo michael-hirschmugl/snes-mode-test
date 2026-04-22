@@ -17,8 +17,11 @@ all: build/mode1_pal_demo.sfc build/mode0_pal_demo.sfc
 build:
 	mkdir -p build
 
-$(MODE1_ASSETS) $(MODE0_ASSETS): tools/gen_assets.py | build
-	python3 tools/gen_assets.py
+$(MODE1_ASSETS): tools/gen_assets.py | build
+	python3 tools/gen_assets.py mode1_4bpp
+
+$(MODE0_ASSETS): tools/gen_assets.py | build
+	python3 tools/gen_assets.py mode0_2bpp
 
 build/main_mode1_4bpp.o: main_mode1_4bpp.s $(MODE1_ASSETS)
 	ca65 -t none -o $@ main_mode1_4bpp.s

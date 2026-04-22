@@ -26,13 +26,20 @@ Both ROMs share:
 Pipeline:
 
 ```
-tools/gen_assets.py        (Python, Pillow)
+tools/gen_assets.py mode1_4bpp   (Python, Pillow)
   └── writes: build/mode1_4bpp/{palette.bin, tiles.4bpp.chr, tilemap.bin, preview.png}
+tools/gen_assets.py mode0_2bpp   (Python, Pillow)
   └── writes: build/mode0_2bpp/{palette.bin, tiles.2bpp.chr, tilemap.bin, preview.png}
 
 main_mode1_4bpp.s ──ca65──► build/main_mode1_4bpp.o ──ld65 (snes.cfg)──► build/mode1_pal_demo.sfc ──fix_checksum.py──► final
 main_mode0_2bpp.s ──ca65──► build/main_mode0_2bpp.o ──ld65 (snes.cfg)──► build/mode0_pal_demo.sfc ──fix_checksum.py──► final
 ```
+
+The asset generator takes the target name (`mode0_2bpp`, `mode1_4bpp`,
+or `all`) as a mandatory CLI argument. The `Makefile` invokes it once
+per target so each asset set is rebuilt independently. Each target has
+its own palette and pixel art (the 4bpp target uses all 16 palette
+indices; the 2bpp target uses only indices 0..3).
 
 Entry points:
 
@@ -149,6 +156,10 @@ checksum fixer may need updating too.
   `build_tilemap`, `generate_target`).
 - The encoder is **one** function `tile_to_bitplanes(pixels, bpp)` — do
   not split it per bpp unless you also have non-trivial per-bpp logic.
+- Per-target data (palette + pixel art + output filename) lives in the
+  `TARGETS` dict in `gen_assets.py`. Adding a new target means adding a
+  new entry there, plus matching wiring in the `Makefile` and a new
+  `main_*.s` if it produces a new ROM.
 
 ### Git
 
