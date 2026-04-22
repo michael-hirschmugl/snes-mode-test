@@ -26,6 +26,25 @@ format, tile size and screen resolution:
 All ROMs target **LoROM / PAL** consoles, run in `bsnes` / `bsnes-plus` and
 boot on real hardware (e.g. via a flash cart).
 
+### ROM header / real hardware
+
+Each `.sfc` is exactly **32 KiB** LoROM with no SRAM, no coprocessor, and a
+PAL destination code. The internal header (bank 00, `$FFC0-$FFDF`) advertises:
+map-mode `$20` (LoROM SlowROM), cart-type `$00` (ROM only), ROM-size `$05`
+(2^5 KiB = 32 KiB), SRAM-size `$00`, destination `$02` (Europe), fixed-value
+`$00` (old-style header), and a post-link checksum / complement written by
+`tools/fix_checksum.py` such that `checksum XOR complement = $FFFF` and
+`sum(ROM_bytes) mod $10000 = checksum`. The reset path is Emu-RESET at
+`$FFFC` pointing to `$8000`; native RESET does not exist and is left zero.
+No PAL-specific setup is needed — the PPU runs at 50 Hz on PAL hardware
+regardless. Copy a `.sfc` to an EverDrive / SD2SNES / FXPak Pro on a PAL
+SNES and it boots.
+
+In bsnes-plus' manifest viewer these ROMs show the minimal LoROM descriptor
+(`<cartridge region='PAL'><rom><map .../></rom></cartridge>` with two
+`linear` maps for banks `$00-$7D` and `$80-$FF`). There is no `<ram>` block
+because cart-type is `$00`; that is expected and complete.
+
 ## Project layout
 
 ```

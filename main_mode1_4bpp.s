@@ -257,30 +257,34 @@ TilemapData:
     ; 21-byte internal title
     .byte "MODE1 16X16 PAL DEMO "
     ; map mode, cart type, ROM size, SRAM size
-    .byte $20, $00, $08, $00
+    ; ROM size byte = ceil(log2(size_in_KiB)); 2^5 KiB = 32 KiB matches the
+    ; 32768-byte .sfc produced by snes.cfg.
+    .byte $20, $00, $05, $00
     ; destination code: $02 = Europe (PAL)
     .byte $02
-    ; fixed value + version
-    .byte $33, $00
-    ; complement and checksum (left 0 for this minimal demo)
+    ; fixed value + version. $00 = old-style header (no extended header at
+    ; $FFB0-$FFBF). $33 would claim an extended header, which we do not ship.
+    .byte $00, $00
+    ; complement and checksum (fix_checksum.py rewrites these post-link)
     .word $0000
     .word $0000
 
 .segment "VECTORS"
-    ; $FFE0-$FFFF vector table layout
-    .word $0000          ; Native reserved
-    .word $0000          ; Native reserved
-    .word $0000          ; Native COP
-    .word $0000          ; Native BRK
-    .word $0000          ; Native ABORT
-    .word Nmi            ; Native NMI
-    .word Reset          ; Native RESET
-    .word Irq            ; Native IRQ
-    .word $0000          ; Emu reserved
-    .word $0000          ; Emu reserved
-    .word $0000          ; Emu COP
-    .word $0000          ; Emu BRK
-    .word $0000          ; Emu ABORT
-    .word $0000          ; Emu NMI
-    .word Reset          ; Emu RESET
-    .word $0000          ; Emu IRQ/BRK
+    ; $FFE0-$FFFF vector table layout. Only $FFFC (Emu RESET) is actually
+    ; fetched by the CPU on power-on; native RESET does not exist.
+    .word $0000          ; $FFE0 Native reserved
+    .word $0000          ; $FFE2 Native reserved
+    .word $0000          ; $FFE4 Native COP
+    .word $0000          ; $FFE6 Native BRK
+    .word $0000          ; $FFE8 Native ABORT
+    .word Nmi            ; $FFEA Native NMI
+    .word $0000          ; $FFEC Native reserved (no native RESET)
+    .word Irq            ; $FFEE Native IRQ
+    .word $0000          ; $FFF0 Emu reserved
+    .word $0000          ; $FFF2 Emu reserved
+    .word $0000          ; $FFF4 Emu COP
+    .word $0000          ; $FFF6 Emu reserved
+    .word $0000          ; $FFF8 Emu ABORT
+    .word $0000          ; $FFFA Emu NMI
+    .word Reset          ; $FFFC Emu RESET
+    .word $0000          ; $FFFE Emu IRQ/BRK

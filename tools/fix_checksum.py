@@ -11,7 +11,11 @@ def fix_checksum(path: Path) -> None:
     comp_off = 0x7FDC
     sum_off = 0x7FDE
 
-    data[comp_off:comp_off + 2] = b"\x00\x00"
+    # Canonical pre-sum state per SNES header convention: complement starts
+    # as $FFFF, checksum as $0000. This makes the final byte sum of the ROM
+    # (mod $10000) equal to the stored checksum, which a few copier tools
+    # verify after writing the cart.
+    data[comp_off:comp_off + 2] = b"\xFF\xFF"
     data[sum_off:sum_off + 2] = b"\x00\x00"
 
     checksum = sum(data) & 0xFFFF
