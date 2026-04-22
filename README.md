@@ -7,16 +7,18 @@ that show how to:
   DMA off, clear WRAM / VRAM / CGRAM),
 - enable a specific BG mode,
 - with **one single background layer**,
-- display one **16×16 character** on screen.
+- display one or more **16×16 characters** on screen (Mode 0 / Mode 1
+  show a single centered character; Mode 5 shows four distinct
+  characters, one nudged into each screen corner).
 
 The project ships three complete builds that differ in BG mode, tile
 format, tile size and screen resolution:
 
-| ROM                        | Mode   | BG used | Tile format | BG tile size | Display    | Extras             |
-| -------------------------- | ------ | ------- | ----------- | ------------ | ---------- | ------------------ |
-| `build/mode1_pal_demo.sfc` | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch) | 256×224    | —                  |
-| `build/mode0_pal_demo.sfc` | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch) | 256×224    | —                  |
-| `build/mode5_pal_demo.sfc` | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch) | 512×448    | hi-res + interlace |
+| ROM                        | Mode   | BG used | Tile format | BG tile size | Display    | Characters | Extras             |
+| -------------------------- | ------ | ------- | ----------- | ------------ | ---------- | ---------- | ------------------ |
+| `build/mode1_pal_demo.sfc` | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch) | 256×224    | 1 (center) | —                  |
+| `build/mode0_pal_demo.sfc` | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch) | 256×224    | 1 (center) | —                  |
+| `build/mode5_pal_demo.sfc` | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch) | 512×448    | 4 (corners) | hi-res + interlace |
 
 All ROMs target **LoROM / PAL** consoles, run in `bsnes` / `bsnes-plus` and
 boot on real hardware (e.g. via a flash cart).
@@ -48,8 +50,9 @@ build/
     preview.png        # expected picture (3x upscaled)
   mode5_2bpp/
     palette.bin        # same bytes as mode0_2bpp/palette.bin
-    tiles.2bpp.chr     # same bytes as mode0_2bpp/tiles.2bpp.chr
-    tilemap.bin        # 32x32 BG2 tilemap; ONE entry holds the whole 16x16 char
+    tiles.2bpp.chr     # 2bpp tile data: 30 tiles x 16 bytes = 480 bytes
+                       # (covers four distinct 16x16 characters)
+    tilemap.bin        # 32x32 BG2 tilemap; FOUR entries (one per screen corner)
     preview.png        # expected picture for 512x448 (2x upscaled)
 ```
 
@@ -106,23 +109,30 @@ Differences between the three demos:
 | -------------- | ------------------- | ------------------- | --------------------------------- |
 | `BGMODE`       | `$01`               | `$00`               | `$25` (mode 5 + BG2 16×16 tiles)  |
 | Palette upload | 32 bytes, 16 colors | 8 bytes, 4 colors   | 8 bytes, 4 colors                 |
-| Tile upload    | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 288 bytes (`$0120`)               |
+| Tile upload    | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 480 bytes (`$01E0`)               |
+| Tile count     | 18 tiles            | 18 tiles            | 30 tiles (covers four characters) |
 | Tile size      | 32 B (4 bitplanes)  | 16 B (2 bitplanes)  | 16 B (2 bitplanes)                |
 | `TM` / `TS`    | `$01` / `$00`       | `$01` / `$00`       | `$02` / `$02` (BG2 on main + sub) |
 | `SETINI`       | `$00`               | `$00`               | `$01` (interlace on)              |
 
 Note on Mode 5 BG2 16×16 tile mode: a single tilemap entry points at tile
 index `N` and the PPU auto-reads `N, N+1, N+16, N+17` as the four 8×8
-sub-tiles of a 16×16 screen block. The Mode 0/1 VRAM layout (character at
-indices `0, 1, 16, 17`) is therefore byte-compatible with Mode 5 BG2, and
-the Mode 5 ROM uses exactly the same `palette.bin` and `tiles.2bpp.chr`
-bytes as the Mode 0 ROM — only the `tilemap.bin` differs (one entry vs.
-four).
+sub-tiles of a 16×16 screen block. The Mode 0 / Mode 1 VRAM layout
+(character at indices `0, 1, 16, 17`) is byte-compatible with that
+auto-read, so Mode 5's first character is the same cross tile used by
+the other builds. Mode 5 then additionally stores **three** further
+characters at indices `(4,5,20,21)`, `(8,9,24,25)` and `(12,13,28,29)`
+— same pattern, next free 2×2 blocks — so it needs a larger
+`tiles.2bpp.chr` (30 tiles / 480 bytes). The palette stays identical
+to Mode 0; only `tiles.2bpp.chr` and `tilemap.bin` differ.
 
-### VRAM tile layout (all demos)
+### VRAM tile layout
 
-Tiles as seen in the tile viewer (16 tiles per row) — character arranged
-as a true 2×2 block at the top-left of VRAM:
+Tiles as seen in the tile viewer (16 tiles per row) — each character
+is stored as a true 2×2 block so both 8×8 and 16×16 BG modes can
+reference it with the same VRAM layout.
+
+Mode 0 / Mode 1 (one character):
 
 ```
 index  0 = character top-left
@@ -132,12 +142,28 @@ index 16 = character bottom-left
 index 17 = character bottom-right
 ```
 
+Mode 5 (four characters, same N, N+1, N+16, N+17 pattern, each 2×2
+block 4 indices apart):
+
+```
+indices  0, 1, 16, 17 = character 1 (cross)
+indices  4, 5, 20, 21 = character 2 (diagonal X)
+indices  8, 9, 24, 25 = character 3 (filled square)
+indices 12,13, 28, 29 = character 4 (checkerboard)
+index            2    = blank tile (tilemap background)
+```
+
 For the 8×8-tile modes (Mode 0 / Mode 1), the tilemap is filled with
 index `2` everywhere and the center (tile position `14,11`) holds the
-four character indices. For Mode 5 (BG2 16×16-tile mode), the tilemap is
-still filled with index `2` everywhere, but a single entry at tile
-position `15,13` (in 16×16-tile units) holds index `0`, and the PPU
-auto-assembles tiles `0, 1, 16, 17` into the on-screen 16×16 block.
+four character indices as four separate tilemap entries. For Mode 5
+(BG2 16×16-tile mode), the tilemap is still filled with index `2`
+everywhere, but **four** entries at tile positions `(1,1)`, `(30,1)`,
+`(1,26)` and `(30,26)` (in 16×16-tile units) hold the top-left index
+of each character, and the PPU auto-assembles the four 8×8 sub-tiles
+into the on-screen 16×16 block. The corner positions are nudged one
+16×16 cell inside the edge of the 512×448 screen so they stay outside
+the overscan mask that bsnes-plus and real PAL TVs hide at the screen
+borders.
 
 ### Why `tilemap.bin` has no bit-depth suffix
 
@@ -166,17 +192,21 @@ asset set per invocation:
 ```bash
 python3 tools/gen_assets.py mode0_2bpp   # 4-color palette, indices 0..3
 python3 tools/gen_assets.py mode1_4bpp   # 16-color palette, indices 0..15
-python3 tools/gen_assets.py mode5_2bpp   # same art as mode0_2bpp, 16x16-tile tilemap
+python3 tools/gen_assets.py mode5_2bpp   # mode0 cross tile + 3 extra 16x16 tiles
 python3 tools/gen_assets.py all          # regenerate all three
 ```
 
 Each target has its **own** palette and pixel art (the 2bpp builds stay
 within 4 palette slots while the 4bpp build actually exercises all 16
 slots, rendered as a 4×4 grid of 4×4 colored blocks, one per palette
-index). The `mode5_2bpp` target shares palette and tile bytes with
-`mode0_2bpp` but writes a different `tilemap.bin` and a 512×448 preview.
-The `Makefile` invokes the script once per target, so `make` only
-regenerates the asset set that is out of date.
+index). Every target declares a list of characters (render function +
+tilemap position + VRAM indices) plus its own `tiles_to_upload` count,
+so Mode 0 and Mode 1 carry one character each while Mode 5 carries
+four. The `mode5_2bpp` target shares its palette bytes with
+`mode0_2bpp` but generates a bigger `tiles.2bpp.chr` and a different
+`tilemap.bin` (plus a 512×448 preview). The `Makefile` invokes the
+script once per target, so `make` only regenerates the asset set that
+is out of date.
 
 8bpp (Mode 3/4 BG1) is **not** supported; add a new branch in
 `tile_to_bitplanes` if you need it.
