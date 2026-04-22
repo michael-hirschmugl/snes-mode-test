@@ -18,19 +18,21 @@ architecture, conventions or common pitfalls change.
 > super-tiles (with H/V flip variants, since the tilemap word encodes
 > those bits for free) and dense-packs them into VRAM. Output goes to
 > `build/<--name>/` in the same `{palette.bin, tiles.<bpp>bpp.chr,
-> tilemap.bin, preview.png}` format as the static demos. There is no
-> matching `main_*.s` yet — the target produces data only, ready to
-> `.incbin` into a future 4bpp Mode 5 ROM.
+> tilemap.bin, preview.png}` format as the static demos. The
+> `mode5_wallpaper_4bpp` instance of that target feeds the
+> `main_mode5_4bpp.s` ROM (`build/mode5_wallpaper_pal_demo.sfc`), a
+> full-screen 512×448 BG1 4bpp wallpaper demo.
 
 ---
 
 ## High-level architecture
 
-This repo produces three tiny SNES ROMs from the same build system:
+This repo produces four tiny SNES ROMs from the same build system:
 
 - `build/mode1_pal_demo.sfc` — Mode 1, BG1 only, **4bpp** tiles, 16-color palette, 8×8 tile size, 256×224
 - `build/mode0_pal_demo.sfc` — Mode 0, BG1 only, **2bpp** tiles,  4-color palette, 8×8 tile size, 256×224
-- `build/mode5_pal_demo.sfc` — Mode 5, BG2 only, **2bpp** tiles,  4-color palette, **16×16** tile size, **512×448** (hi-res + interlace)
+- `build/mode5_pal_demo.sfc` — Mode 5, BG2 only, **2bpp** tiles,  4-color palette, **16×16** tile size, **512×448** (hi-res + interlace), four dense-packed corner characters
+- `build/mode5_wallpaper_pal_demo.sfc` — Mode 5, BG1 only, **4bpp** tiles, 16-color palette, **16×16** tile size, **512×448** (hi-res + interlace), full-screen wallpaper from a PNG (generated via `mode5_image`)
 
 All ROMs share:
 
@@ -46,9 +48,9 @@ They diverge on:
 
 - Mode 1 / Mode 0 use BG1 with 8×8 tiles; the tilemap has four entries
   around tile position `14,11` pointing at indices `0, 1, 16, 17`.
-- Mode 5 uses BG2 with 16×16 tiles (BGMODE bit 5); the tilemap has
-  four non-blank entries, one near each screen corner (characters are
-  dense-packed in 2-tile steps):
+- `mode5_pal_demo` uses BG2 with 16×16 tiles (BGMODE bit 5); the
+  tilemap has four non-blank entries, one near each screen corner
+  (characters are dense-packed in 2-tile steps):
   - `(1,  1)`  -> index `0` (cross tile)
   - `(30, 1)`  -> index `2` (diagonal-X variant)
   - `(1,  26)` -> index `4` (filled-square variant)
@@ -58,9 +60,17 @@ They diverge on:
   512×448 screen so it sits outside the emulator / TV overscan mask.
   The PPU assembles each whole character from its single tilemap entry
   via the 16×16 auto-read pattern.
-- Mode 5 enables interlace via `SETINI` bit 0 and enables BG2 on **both**
-  TM and TS, because Mode 5's horizontal hi-res only shows the full 512
-  px wide image if main+sub are both populated.
+- `mode5_wallpaper_pal_demo` uses BG1 with 16×16 tiles (BGMODE bit 4),
+  4bpp, and a fully populated 32×28 super-tile grid covering the whole
+  512×448 screen. Its `tiles.4bpp.chr` / `tilemap.bin` come from the
+  `mode5_image` pipeline (flip-dedup'd, dense-packed super-tiles). The
+  tile base sits at VRAM word `$0000` and the tilemap at word `$3000`
+  (`BG1SC = $30`), so it does **not** collide with the 24 KiB of tile
+  data uploaded at the start of VRAM.
+- Both Mode 5 demos enable interlace via `SETINI` bit 0 and enable
+  their BG layer on **both** TM and TS, because Mode 5's horizontal
+  hi-res only shows the full 512 px wide image if main+sub are both
+  populated.
 
 Pipeline:
 
@@ -75,19 +85,28 @@ tools/gen_assets.py mode5_2bpp   (Python, Pillow)
        only tilemap.bin and preview.png differ.)
 tools/gen_assets.py mode5_image --source PATH [--crop-align …] [--bpp 2|4] [--name NAME]
   └── writes: build/<NAME>/{palette.bin, tiles.<bpp>bpp.chr, tilemap.bin, preview.png}
-      (image-derived, dedup'd Mode 5 BG1/BG2 background; no ROM build yet.)
+      (image-derived, dedup'd Mode 5 BG1/BG2 background.)
+  The Makefile's `mode5_wallpaper_4bpp` rule is a wired-up invocation of
+  this target; it feeds `main_mode5_4bpp.s` and produces the
+  `mode5_wallpaper_pal_demo.sfc` ROM.
 
-main_mode1_4bpp.s ──ca65──► build/main_mode1_4bpp.o ──ld65 (snes.cfg)──► build/mode1_pal_demo.sfc ──fix_checksum.py──► final
-main_mode0_2bpp.s ──ca65──► build/main_mode0_2bpp.o ──ld65 (snes.cfg)──► build/mode0_pal_demo.sfc ──fix_checksum.py──► final
-main_mode5_2bpp.s ──ca65──► build/main_mode5_2bpp.o ──ld65 (snes.cfg)──► build/mode5_pal_demo.sfc ──fix_checksum.py──► final
+main_mode1_4bpp.s ──ca65──► build/main_mode1_4bpp.o ──ld65 (snes.cfg)──► build/mode1_pal_demo.sfc           ──fix_checksum.py──► final
+main_mode0_2bpp.s ──ca65──► build/main_mode0_2bpp.o ──ld65 (snes.cfg)──► build/mode0_pal_demo.sfc           ──fix_checksum.py──► final
+main_mode5_2bpp.s ──ca65──► build/main_mode5_2bpp.o ──ld65 (snes.cfg)──► build/mode5_pal_demo.sfc           ──fix_checksum.py──► final
+main_mode5_4bpp.s ──ca65──► build/main_mode5_4bpp.o ──ld65 (snes.cfg)──► build/mode5_wallpaper_pal_demo.sfc ──fix_checksum.py──► final
 ```
 
 The asset generator takes the target name (`mode0_2bpp`, `mode1_4bpp`,
 `mode5_2bpp`, `mode5_image`, or `all`) as a mandatory CLI argument. The
 `Makefile` invokes the static targets once each so they rebuild
-independently; `mode5_image` is a dynamic target that additionally needs
-`--source` and is invoked manually (or by a separate make rule you add
-when it drives a ROM build). `all` only generates the static targets.
+independently; it also has one wired-up `mode5_image` invocation that
+produces `build/mode5_wallpaper_4bpp/` for the 4bpp wallpaper ROM
+(`--source assets/linux_wallpaper_512x448_right_4bpp.png --bpp 4
+--name mode5_wallpaper_4bpp`). Additional `mode5_image` outputs can
+still be produced manually and either `.incbin`'d into a new `main_*.s`
+or consumed by another downstream tool. `all` builds all four ROMs and
+therefore triggers both the static asset targets and the wallpaper
+`mode5_image` invocation.
 Each static target has its own palette and pixel art (the 4bpp target
 uses all 16 palette indices; the 2bpp targets use only indices 0..3).
 Static targets also declare a `tile_pixels_size` (8 or 16) and a
@@ -134,7 +153,7 @@ Hard limits enforced in code:
 
 Entry points:
 
-- Source: `main_mode1_4bpp.s`, `main_mode0_2bpp.s`, `main_mode5_2bpp.s` (65816 assembly, ca65 syntax)
+- Source: `main_mode1_4bpp.s`, `main_mode0_2bpp.s`, `main_mode5_2bpp.s`, `main_mode5_4bpp.s` (65816 assembly, ca65 syntax)
 - Data: `build/<target>/*` (generated, gitignored)
 - Linker config: `snes.cfg` (LoROM, HEADER at `$7FC0`, VECTORS at `$7FE0`)
 - Build: `Makefile`
@@ -196,15 +215,22 @@ feature is genuinely mode-specific.
 
 Mode 5 specifics that don't apply to Mode 0 / Mode 1:
 
-- `BGMODE = $25` (mode 5 + BG2 16×16 tile size via bit 5).
-- Programs `BG2SC` / `BG2HOFS` / `BG2VOFS` instead of the BG1 variants,
-  and uses the upper nibble of `BG12NBA` for BG2's char base.
-- Writes `SETINI = $01` to enable interlace (doubles vertical resolution
-  to 448 lines).
-- Sets `TM = TS = $02`: Mode 5's horizontal hi-res combines main-screen
-  odd columns with sub-screen even columns. A BG layer that's only on
-  `TM` shows up on every other column, which the user will perceive as
-  "half the picture missing".
+- `mode5_2bpp`: `BGMODE = $25` (mode 5 + BG2 16×16 tile size via bit 5).
+  Programs `BG2SC` / `BG2HOFS` / `BG2VOFS`; uses the upper nibble of
+  `BG12NBA` for BG2's char base (but leaves it at `0` since only BG2
+  is used and its tiles live at VRAM word `$0000`). `TM = TS = $02`.
+- `mode5_4bpp` (wallpaper): `BGMODE = $15` (mode 5 + BG1 16×16 tile
+  size via bit 4). Programs `BG1SC` / `BG1HOFS` / `BG1VOFS`; uses the
+  lower nibble of `BG12NBA` for BG1's char base. `TM = TS = $01`.
+  Tilemap must be moved out of the BG1 tile region — this demo puts
+  tiles at word `$0000..$2FFF` (24 KiB) and the tilemap at word `$3000`
+  so `BG1SC = $30`.
+- Both Mode 5 demos write `SETINI = $01` to enable interlace (doubles
+  vertical resolution to 448 lines).
+- Mode 5's horizontal hi-res combines main-screen odd columns with
+  sub-screen even columns. A BG layer that's only on `TM` shows up on
+  every other column, which the user will perceive as "half the
+  picture missing"; hence the `TM == TS` rule above.
 
 ### Tilemap is format-agnostic (but NOT tile-size-agnostic)
 
@@ -384,12 +410,18 @@ mistake causes silent boot failure on real hardware and most emulators.
 
 `main_mode1_4bpp.s` uploads `18 × 32 = 576` bytes (`$0240`).
 `main_mode0_2bpp.s` uploads `18 × 16 = 288` bytes (`$0120`).
-`main_mode5_2bpp.s` uploads `30 × 16 = 480` bytes (`$01E0`) because it
-covers four characters using VRAM indices up to `29` inclusive. Each
-target has its own `tiles_to_upload` value in the `TARGETS` dict of
-`gen_assets.py`; if you change it, the matching DMA0SIZE constant in
-the corresponding `main_*.s` must change in lockstep. There is no
-runtime check.
+`main_mode5_2bpp.s` uploads `24 × 16 = 384` bytes (`$0180`) because it
+covers four dense-packed characters plus one reserved blank super-tile
+(VRAM indices `0..23`).
+`main_mode5_4bpp.s` uploads the whole dense-packed wallpaper tileset
+— currently `768 × 32 = 24576` bytes (`$6000`) — because the image
+pipeline rounds the VRAM layout up to a full 8-super-tile row-pair.
+Each static target has its own `tiles_to_upload` value in the
+`TARGETS` dict of `gen_assets.py`; the `mode5_image` output size is
+determined by the number of unique flip-deduped super-tiles in the
+source, rounded up to the next row-pair boundary. If you change any
+of these, the matching `DMA0SIZE` constant in the corresponding
+`main_*.s` must change in lockstep. There is no runtime check.
 
 ### 6. Palette size mismatch
 
@@ -430,17 +462,19 @@ supplies the odd columns and the sub screen supplies the even columns.
 If the BG layer is only enabled on `TM`, half the columns come from the
 sub screen's fixed colour / backdrop and the content appears as
 vertical stripes ("only half the picture visible"). `main_mode5_2bpp.s`
-therefore writes `TM = TS = $02`.
+therefore writes `TM = TS = $02`; `main_mode5_4bpp.s` (BG1) writes
+`TM = TS = $01`.
 
 ### 12. Mode 5 without interlace but expecting 448 lines
 
 Mode 5's hi-res only doubles the **horizontal** resolution. Vertical
 doubling to 448 lines requires `SETINI` bit 0 (interlace) to be set.
 Without interlace, Mode 5 still runs at 224 visible lines and the
-16×16 BG2 tile covers twice as many scanlines vertically as expected.
-If you change interlace behaviour, update both `main_mode5_2bpp.s` and
-the `screen_size` of the `mode5_2bpp` target in `tools/gen_assets.py`
-(which drives `preview.png`).
+16×16 BG tiles cover twice as many scanlines vertically as expected.
+If you change interlace behaviour, update the Mode 5 assembly sources
+(`main_mode5_2bpp.s`, `main_mode5_4bpp.s`) and the `screen_size` of
+the `mode5_2bpp` / `mode5_image` code paths in `tools/gen_assets.py`
+(which drives `preview.png`) in lockstep.
 
 ### 13. 16×16 BG tile size expects tile indices in a specific pattern
 
@@ -455,7 +489,7 @@ that this property still holds or Mode 5 will display garbage.
 
 ## When in doubt
 
-- Read the three `main_*.s` side by side to see which fields vary per
+- Read the four `main_*.s` side by side to see which fields vary per
   mode (`BGMODE`, BGxSC / BGxNBA / BGxHOFS, `TM`/`TS`, `SETINI`).
 - Load the ROM in `bsnes-plus` and open Tools → VRAM viewer / Tile viewer
   to verify tile and palette uploads before blaming logic.
@@ -463,3 +497,7 @@ that this property still holds or Mode 5 will display garbage.
   address, then `TM` (and `TS` for Mode 5), then force blank.
 - If Mode 5 shows a striped character, `TS` isn't set. If Mode 5 shows
   a stretched character, interlace is off.
+- If the wallpaper demo renders a mosaic of garbage, check that the
+  BG1 tilemap base (`BG1SC`) sits **after** the uploaded tile data in
+  VRAM: the tile DMA writes 24 KiB starting at word `$0000`, so the
+  tilemap must live at word `$3000` or later (`BG1SC >= $30`).

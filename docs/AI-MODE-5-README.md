@@ -199,36 +199,53 @@ entry via the `N, N+1, N+16, N+17` pattern.
 
 ---
 
-## 7. BG1 (4bpp) — how you would extend this repo
+## 7. BG1 (4bpp) — what this repo actually does (wallpaper demo)
 
-The shape is identical; only the numbers change. Assume you want BG1
-4bpp on the same Mode 5 screen, 16x16 tile size, dense-packed.
+The shape is identical to the 2bpp demo; only the numbers change.
+This repo uses BG1 4bpp on the same Mode 5 screen with 16x16 tile size
+and dense-packed super-tiles in [`main_mode5_4bpp.s`](../main_mode5_4bpp.s)
+(ROM: `build/mode5_wallpaper_pal_demo.sfc`). Its tiles / palette /
+tilemap are produced by the `mode5_image` pipeline (section 9.7) from
+[`assets/linux_wallpaper_512x448_right_4bpp.png`](../assets/linux_wallpaper_512x448_right_4bpp.png).
 
-1. **`BGMODE`**: set mode to 5 and enable both tile-size bits you need:
+1. **`BGMODE`**: set mode to 5 and enable the 16x16 tile-size bits you
+   need:
    - bit 4 = BG1 16x16 tile size
    - bit 5 = BG2 16x16 tile size
-   - value for "mode 5 + BG1 16x16 + BG2 16x16" = `$05 | $10 | $20 = $35`.
+   - value for "mode 5 + BG1 16x16 only" (what the wallpaper demo uses)
+     = `$05 | $10 = $15`.
+   - value for "mode 5 + BG1 16x16 + BG2 16x16" (if you ever combine
+     both) = `$05 | $10 | $20 = $35`.
 2. **`BG1SC`**: tilemap base for BG1. Pick a VRAM word address that
-   does not collide with BG1 tiles, BG2 tiles or the BG2 tilemap. A
-   common layout (example):
+   does not collide with BG1 tiles, BG2 tiles or the BG2 tilemap. The
+   wallpaper demo uploads 24 KiB of 4bpp tile data at word
+   `$0000..$2FFF` (one 4bpp tile = 32 bytes = 16 words; 768 tile slots
+   fill 12288 words) and places the BG1 tilemap at word `$3000`,
+   giving `BG1SC = $30` (32x32 size). Generic layout for BG1+BG2
+   together:
    - BG1 tiles: word `$0000..$3FFF`   (up to 16 KiB of 4bpp data; one
      4bpp tile = 32 bytes = 16 words, so 1024 unique 8x8 tiles max)
    - BG2 tiles: word `$4000..$4FFF`   (up to 4 KiB of 2bpp data)
    - BG1 tilemap: word `$5000` (`BG1SC = $50 | size`)
    - BG2 tilemap: word `$5800` (`BG2SC = $58 | size`)
 3. **`BG12NBA`**: low nibble = BG1 char base (word / 4096), high nibble
-   = BG2 char base. For the example above BG1 char base word `$0000`
-   is nibble `0`, BG2 char base word `$4000` is nibble `4`, so
-   `BG12NBA = $40`.
+   = BG2 char base. For the wallpaper demo (BG1 only, char base word
+   `$0000`) the whole register is `$00`. For the combined BG1+BG2
+   example above BG1 char base word `$0000` is nibble `0`, BG2 char
+   base word `$4000` is nibble `4`, so `BG12NBA = $40`.
 4. **Palette DMA for BG1**: 32 bytes at CGRAM `$00..$1F` (BG1 sub-palette
    0). If you use more than 16 colours, upload up to 128 bytes and
    select sub-palettes 0..7 per tilemap entry.
 5. **Tile DMA for BG1**: 32 bytes per 8x8 tile. Dense-packed 16x16
    characters still follow the `N, N+1, N+16, N+17` pattern; a single
-   character consumes 128 bytes of VRAM (`4 * 32`).
+   character consumes 128 bytes of VRAM (`4 * 32`). For a full-screen
+   wallpaper expect `unique_super_tiles * 128` bytes (up to the 64 KiB
+   VRAM budget minus tilemap), rounded up to a full 8-super-tile
+   row-pair as in `build_mode5_image_vram`.
 6. **Tilemap DMA for BG1**: 2048 bytes; same structure as BG2, just at
    the BG1 tilemap base.
-7. **`TM` / `TS`**: add BG1 to both. For BG1+BG2 on: `TM = TS = $03`.
+7. **`TM` / `TS`**: add BG1 to both. For BG1 only: `TM = TS = $01`
+   (wallpaper demo). For BG1+BG2 on: `TM = TS = $03`.
 8. Everything else (interlace, force-blank dance, brightness) stays
    the same.
 
@@ -421,8 +438,12 @@ It composes:
   the input, so flip-dedup bugs surface immediately.
 
 This is the recommended entry point for new Mode 5 background
-artwork. Adding another image target is usually just another CLI
-invocation with a different `--source` / `--name`; only add a new
+artwork. The `Makefile` already wires one such invocation up for the
+`mode5_wallpaper_4bpp` outputs that feed
+[`main_mode5_4bpp.s`](../main_mode5_4bpp.s); adding another image
+target is usually just another `mode5_image` invocation with a
+different `--source` / `--name` (plus a new `main_*.s` + Makefile
+rules if you want an accompanying ROM). Only add a new
 `mode5_<name>` *static* target to `TARGETS` if you want hand-authored
 pixel art rather than a generated image.
 

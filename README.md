@@ -1,24 +1,27 @@
 # SNES Tile Test Demos (PAL)
 
-Three minimal Super Nintendo demos written in cc65 assembly (`ca65` / `ld65`)
+Four minimal Super Nintendo demos written in cc65 assembly (`ca65` / `ld65`)
 that show how to:
 
 - initialize the console in a hardware-safe way (force blank, IRQ/NMI off,
   DMA off, clear WRAM / VRAM / CGRAM),
 - enable a specific BG mode,
 - with **one single background layer**,
-- display one or more **16×16 characters** on screen (Mode 0 / Mode 1
-  show a single centered character; Mode 5 shows four distinct
-  characters, one nudged into each screen corner).
+- display either one or more **16×16 characters** on screen (Mode 0 /
+  Mode 1 show a single centered character; the `mode5_2bpp` demo shows
+  four distinct characters, one nudged into each screen corner) **or**
+  a full-screen 512×448 wallpaper generated from a PNG (the
+  `mode5_4bpp` / wallpaper demo).
 
-The project ships three complete builds that differ in BG mode, tile
+The project ships four complete builds that differ in BG mode, tile
 format, tile size and screen resolution:
 
-| ROM                        | Mode   | BG used | Tile format | BG tile size | Display    | Characters | Extras             |
-| -------------------------- | ------ | ------- | ----------- | ------------ | ---------- | ---------- | ------------------ |
-| `build/mode1_pal_demo.sfc` | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch) | 256×224    | 1 (center) | —                  |
-| `build/mode0_pal_demo.sfc` | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch) | 256×224    | 1 (center) | —                  |
-| `build/mode5_pal_demo.sfc` | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch) | 512×448    | 4 (corners) | hi-res + interlace |
+| ROM                                  | Mode   | BG used | Tile format | BG tile size  | Display    | Contents                | Extras             |
+| ------------------------------------ | ------ | ------- | ----------- | ------------- | ---------- | ----------------------- | ------------------ |
+| `build/mode1_pal_demo.sfc`           | Mode 1 | BG1     | 4bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)    | —                  |
+| `build/mode0_pal_demo.sfc`           | Mode 0 | BG1     | 2bpp        | 8×8 (2×2 ch)  | 256×224    | 1 character (center)    | —                  |
+| `build/mode5_pal_demo.sfc`           | Mode 5 | BG2     | 2bpp        | 16×16 (1 ch)  | 512×448    | 4 characters (corners)  | hi-res + interlace |
+| `build/mode5_wallpaper_pal_demo.sfc` | Mode 5 | BG1     | 4bpp        | 16×16 (dense) | 512×448    | full-screen wallpaper   | hi-res + interlace |
 
 All ROMs target **LoROM / PAL** consoles, run in `bsnes` / `bsnes-plus` and
 boot on real hardware (e.g. via a flash cart).
@@ -29,15 +32,24 @@ boot on real hardware (e.g. via a flash cart).
 main_mode1_4bpp.s      # 65816 asm: Mode 1, 4bpp BG1 demo
 main_mode0_2bpp.s      # 65816 asm: Mode 0, 2bpp BG1 demo
 main_mode5_2bpp.s      # 65816 asm: Mode 5, 2bpp BG2 demo (16x16 tiles, interlace)
+main_mode5_4bpp.s      # 65816 asm: Mode 5, 4bpp BG1 full-screen wallpaper (16x16 tiles, interlace)
 snes.cfg               # ld65 memory/segment config (LoROM, shared)
-Makefile               # builds all three ROMs
+Makefile               # builds all four ROMs
+assets/
+  linux_wallpaper.jpg               # source wallpaper (any aspect)
+  linux_wallpaper_512x448_right.png # cropped to 512x448 (right-anchored)
+  linux_wallpaper_512x448_right_4bpp.png # pre-quantised 16-color version (used by mode5_4bpp)
+  linux_wallpaper_512x448_right_2bpp.png # pre-quantised 4-color version
 tools/
-  gen_assets.py        # 2bpp + 4bpp encoder, palette / tilemap / preview generator
+  gen_assets.py        # 2bpp + 4bpp encoder, palette / tilemap / preview generator;
+                       # also hosts the mode5_image pipeline (PNG/JPG -> dense-packed Mode 5 assets)
+  crop_image.py        # scale + crop + palette-reduce helper (standalone or imported)
   fix_checksum.py      # writes correct SNES header checksum/complement
 build/
-  mode1_pal_demo.sfc   # final Mode 1 ROM
-  mode0_pal_demo.sfc   # final Mode 0 ROM
-  mode5_pal_demo.sfc   # final Mode 5 ROM
+  mode1_pal_demo.sfc            # final Mode 1 ROM
+  mode0_pal_demo.sfc            # final Mode 0 ROM
+  mode5_pal_demo.sfc            # final Mode 5 ROM (BG2, 4 corner characters)
+  mode5_wallpaper_pal_demo.sfc  # final Mode 5 ROM (BG1, full-screen wallpaper)
   mode1_4bpp/
     palette.bin        # 4bpp palette: 16 colors, BGR555, 32 bytes
     tiles.4bpp.chr     # 4bpp tile data: 18 tiles x 32 bytes
@@ -54,6 +66,12 @@ build/
                        # (four dense-packed 16x16 characters + blank slot)
     tilemap.bin        # 32x32 BG2 tilemap; FOUR entries (one per screen corner)
     preview.png        # expected picture for 512x448 (2x upscaled)
+  mode5_wallpaper_4bpp/
+    palette.bin        # 4bpp palette: 16 colors, BGR555, 32 bytes
+    tiles.4bpp.chr     # 4bpp tile data: dense-packed flip-dedup'd super-tiles
+                       # (currently 768 8x8 slots x 32 bytes = 24576 bytes)
+    tilemap.bin        # 32x32 BG1 tilemap; 32x28 visible entries + blank padding
+    preview.png        # expected picture for 512x448 (2x upscaled, after dedup)
 ```
 
 ## Requirements
@@ -68,8 +86,9 @@ build/
 make
 ```
 
-The three ROMs appear at `build/mode1_pal_demo.sfc`,
-`build/mode0_pal_demo.sfc` and `build/mode5_pal_demo.sfc`.
+The four ROMs appear at `build/mode1_pal_demo.sfc`,
+`build/mode0_pal_demo.sfc`, `build/mode5_pal_demo.sfc` and
+`build/mode5_wallpaper_pal_demo.sfc`.
 
 ## Clean
 
@@ -85,7 +104,8 @@ All ROMs share the same LoROM / PAL configuration:
 
 - Map mode: `$20` (LoROM, SlowROM)
 - Destination: `$02` (Europe / PAL)
-- Titles: `MODE1 16X16 PAL DEMO` / `MODE0 16X16 PAL DEMO` / `MODE5 16X16 PAL DEMO`
+- Titles: `MODE1 16X16 PAL DEMO` / `MODE0 16X16 PAL DEMO` /
+  `MODE5 16X16 PAL DEMO` / `MODE5 4BPP PAL WALL`
 - Checksum and complement are written automatically by
   `tools/fix_checksum.py` after linking.
 
@@ -103,17 +123,18 @@ All ROMs share the same LoROM / PAL configuration:
 9. `INIDISP = $0F` — force blank off, full brightness
 10. Main loop: `wai` / `bra` (nothing to do)
 
-Differences between the three demos:
+Differences between the four demos:
 
-| Step           | Mode 1 (4bpp, BG1)  | Mode 0 (2bpp, BG1)  | Mode 5 (2bpp, BG2)                |
-| -------------- | ------------------- | ------------------- | --------------------------------- |
-| `BGMODE`       | `$01`               | `$00`               | `$25` (mode 5 + BG2 16×16 tiles)  |
-| Palette upload | 32 bytes, 16 colors | 8 bytes, 4 colors   | 8 bytes, 4 colors                 |
-| Tile upload    | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 384 bytes (`$0180`)               |
-| Tile count     | 18 tiles            | 18 tiles            | 24 tiles (covers four characters) |
-| Tile size      | 32 B (4 bitplanes)  | 16 B (2 bitplanes)  | 16 B (2 bitplanes)                |
-| `TM` / `TS`    | `$01` / `$00`       | `$01` / `$00`       | `$02` / `$02` (BG2 on main + sub) |
-| `SETINI`       | `$00`               | `$00`               | `$01` (interlace on)              |
+| Step            | Mode 1 (4bpp, BG1)  | Mode 0 (2bpp, BG1)  | Mode 5 (2bpp, BG2)                  | Mode 5 wallpaper (4bpp, BG1)             |
+| --------------- | ------------------- | ------------------- | ----------------------------------- | ---------------------------------------- |
+| `BGMODE`        | `$01`               | `$00`               | `$25` (mode 5 + BG2 16×16 tiles)    | `$15` (mode 5 + BG1 16×16 tiles)         |
+| Palette upload  | 32 bytes, 16 colors | 8 bytes, 4 colors   | 8 bytes, 4 colors                   | 32 bytes, 16 colors                      |
+| Tile upload     | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 384 bytes (`$0180`)                 | 24576 bytes (`$6000`)                    |
+| Tile count      | 18 tiles            | 18 tiles            | 24 tiles (covers four characters)   | 768 tiles (dense-packed super-tiles)     |
+| Tile size       | 32 B (4 bitplanes)  | 16 B (2 bitplanes)  | 16 B (2 bitplanes)                  | 32 B (4 bitplanes)                       |
+| Tilemap base    | word `$1000`        | word `$1000`        | word `$1000` (`BG2SC = $10`)        | word `$3000` (`BG1SC = $30`)             |
+| `TM` / `TS`     | `$01` / `$00`       | `$01` / `$00`       | `$02` / `$02` (BG2 on main + sub)   | `$01` / `$01` (BG1 on main + sub)        |
+| `SETINI`        | `$00`               | `$00`               | `$01` (interlace on)                | `$01` (interlace on)                     |
 
 Note on Mode 5 BG2 16×16 tile mode: a single tilemap entry points at tile
 index `N` and the PPU auto-reads `N, N+1, N+16, N+17` as the four 8×8
@@ -212,20 +233,42 @@ asset set per invocation:
 python3 tools/gen_assets.py mode0_2bpp   # 4-color palette, indices 0..3
 python3 tools/gen_assets.py mode1_4bpp   # 16-color palette, indices 0..15
 python3 tools/gen_assets.py mode5_2bpp   # 4 dense-packed 16x16 characters + blank
-python3 tools/gen_assets.py all          # regenerate all three
+python3 tools/gen_assets.py all          # regenerate all three static targets
 ```
 
-Each target has its **own** palette and pixel art (the 2bpp builds stay
-within 4 palette slots while the 4bpp build actually exercises all 16
-slots, rendered as a 4×4 grid of 4×4 colored blocks, one per palette
-index). Every target declares a list of characters (render function +
-tilemap position + VRAM indices) plus its own `tiles_to_upload` count,
-so Mode 0 and Mode 1 carry one character each while Mode 5 carries
-four. The `mode5_2bpp` target shares its palette bytes with
-`mode0_2bpp` but generates a bigger `tiles.2bpp.chr` and a different
-`tilemap.bin` (plus a 512×448 preview). The `Makefile` invokes the
-script once per target, so `make` only regenerates the asset set that
-is out of date.
+Each static target has its **own** palette and pixel art (the 2bpp
+builds stay within 4 palette slots while the 4bpp build actually
+exercises all 16 slots, rendered as a 4×4 grid of 4×4 colored blocks,
+one per palette index). Every target declares a list of characters
+(render function + tilemap position + VRAM indices) plus its own
+`tiles_to_upload` count, so Mode 0 and Mode 1 carry one character each
+while Mode 5 carries four. The `mode5_2bpp` target shares its palette
+bytes with `mode0_2bpp` but generates a bigger `tiles.2bpp.chr` and a
+different `tilemap.bin` (plus a 512×448 preview). The `Makefile`
+invokes the script once per target, so `make` only regenerates the
+asset set that is out of date.
+
+#### `mode5_image` — full-screen backgrounds from a PNG / JPG
+
+On top of the static targets, `gen_assets.py` also hosts a
+**dynamic** `mode5_image` pipeline that turns any JPG/PNG into a
+dense-packed, flip-dedup'd, full-screen Mode 5 background:
+
+```bash
+python3 tools/gen_assets.py mode5_image \
+    --source assets/linux_wallpaper_512x448_right_4bpp.png \
+    --bpp 4 \
+    --name mode5_wallpaper_4bpp
+```
+
+The tool scales + crops + palette-quantises the source (via
+`tools/crop_image.py`), slices it into 32×28 super-tiles, dedupes them
+across identity / H / V / HV flips, dense-packs the unique super-tiles
+into VRAM at `(k // 8) * 32 + (k % 8) * 2`, and emits
+`build/<name>/{palette.bin, tiles.<bpp>bpp.chr, tilemap.bin, preview.png}`.
+This is the pipeline that feeds the `mode5_wallpaper_pal_demo.sfc`
+ROM; the `Makefile` drives it automatically with the 4bpp wallpaper
+source and wires the output into `main_mode5_4bpp.s`.
 
 8bpp (Mode 3/4 BG1) is **not** supported; add a new branch in
 `tile_to_bitplanes` if you need it.
