@@ -20,8 +20,8 @@ All ROMs share:
 - the same init sequence (force blank → clear WRAM/VRAM/CGRAM via DMA → PPU
   setup → palette/tile/tilemap upload → end force blank),
 - the same VRAM tile placement (character at indices `0,1,16,17`,
-  blank tile at `2`), which is byte-compatible with both 8×8 and 16×16
-  BG tile modes (the 16×16 mode auto-reads `N, N+1, N+16, N+17`),
+  blank/transparent tile at `8`), which is byte-compatible with both 8×8
+  and 16×16 BG tile modes (the 16×16 mode auto-reads `N, N+1, N+16, N+17`),
 - the same post-link checksum fixer.
 
 They diverge on:
@@ -29,11 +29,12 @@ They diverge on:
 - Mode 1 / Mode 0 use BG1 with 8×8 tiles; the tilemap has four entries
   around tile position `14,11` pointing at indices `0, 1, 16, 17`.
 - Mode 5 uses BG2 with 16×16 tiles (BGMODE bit 5); the tilemap has
-  four non-blank entries, one near each screen corner:
-  - `(1,  1)`  -> index `0`  (cross tile)
-  - `(30, 1)`  -> index `4`  (diagonal-X variant)
-  - `(1,  26)` -> index `8`  (filled-square variant)
-  - `(30, 26)` -> index `12` (checkerboard variant)
+  four non-blank entries, one near each screen corner (characters are
+  dense-packed in 2-tile steps):
+  - `(1,  1)`  -> index `0` (cross tile)
+  - `(30, 1)`  -> index `2` (diagonal-X variant)
+  - `(1,  26)` -> index `4` (filled-square variant)
+  - `(30, 26)` -> index `6` (checkerboard variant)
 
   Each position is nudged one 16×16 cell inside the edge of the
   512×448 screen so it sits outside the emulator / TV overscan mask.
@@ -160,9 +161,9 @@ demo uses **four** distinct characters, one near each corner of the
 512×448 screen:
 
 - cross tile at `(1,  1)`  with VRAM indices `0,1,16,17`
-- diagonal-X at `(30, 1)`  with VRAM indices `4,5,20,21`
-- filled square at `(1,  26)` with VRAM indices `8,9,24,25`
-- checkerboard at `(30, 26)` with VRAM indices `12,13,28,29`
+- diagonal-X at `(30, 1)`  with VRAM indices `2,3,18,19`
+- filled square at `(1,  26)` with VRAM indices `4,5,20,21`
+- checkerboard at `(30, 26)` with VRAM indices `6,7,22,23`
 
 Each position is nudged one 16×16 cell inside the edge because a flush
 `(0/31, *)` or `(*, 0/27)` position would put the tile inside the
@@ -170,12 +171,59 @@ overscan mask that bsnes-plus and real PAL TVs hide at the screen
 borders. Mode 0/1 place their single character near the center of the
 256×224 screen.
 
-### Blank tile at index 2
+### Blank tile at index 8
 
 Tile index `0` is reserved for `character-top-left`. To avoid the common
 "whole screen filled with one tile" bug, the tilemap is explicitly filled
-with a dedicated blank tile at index `2`, not index `0`. If you add new
-tiles, keep index `2` empty unless you also change the tilemap fill code.
+with a dedicated blank super-tile at index `8`: this slot sits just after
+the four dense-packed Mode-5 characters (`0,2,4,6`) and is fully inside
+the empty VRAM column `8..15 / 24..31`. Hardware auto-reads `8,9,24,25`
+(all zero) and the bsnes-plus Mode-5 hires Tilemap Viewer additionally
+pulls in `10,26` (also zero), so empty cells render as true black in
+every viewer. If you add new tiles, keep index `8` (and its 16×16
+auto-read partners `9, 24, 25`) empty unless you also change the tilemap
+fill code.
+
+### bsnes-plus Tilemap Viewer quirk in Mode 5 hires + 16x16
+
+**This is a debugger bug, not a ROM bug.** Hardware and the regular
+emulator output window render the screen correctly; only the bsnes-plus
+*Tilemap Viewer* shows ghosts of neighbouring characters on three of the
+four corners. The cause is in
+[`tilemap-renderer.cpp`](https://github.com/devinacker/bsnes-plus/blob/master/bsnes/ui-qt/debugger/ppu/tilemap-renderer.cpp)
+(functions `drawMapTile` + `drawMap8pxTile`): for each 16x16 tilemap
+entry the viewer reads the hardware-correct four sub-tiles
+`c, c+1, c+16, c+17`, but in hires mode every sub-tile draw call also
+fetches `t+1` and draws it 8 px to the right. A single Mode 5 hires
+16x16 cell therefore renders as **32 px wide** composed of eight VRAM
+tiles:
+
+```
+top row    : tile c     tile c+1   tile c+1   tile c+2
+bottom row : tile c+16  tile c+17  tile c+17  tile c+18
+```
+
+Real SNES hardware only reads the four auto-read tiles — the extra
+`c+1` (doubled) and `c+2`/`c+18` on the right are a Viewer artefact.
+
+With the dense-packed tileset (characters at `0, 2, 4, 6`, step of two),
+`c+2` and `c+18` are exactly the left half of the *next* character, so
+the three non-last corners appear with a ghost of their neighbour
+glued to their right edge:
+
+- `(1,  1)` cross `c = 0`: ghost tiles `2, 18` = X top-left / X bottom-left.
+- `(30, 1)` X     `c = 2`: ghost tiles `4, 20` = filled-square top-left / bottom-left.
+- `(1, 26)` block `c = 4`: ghost tiles `6, 22` = checkerboard top-left / bottom-left.
+- `(30,26)` checker `c = 6`: ghost tiles `8, 24` — both blank, so this
+  single corner renders cleanly in the viewer.
+
+Empty cells (`BLANK_INDEX = 8`) are unaffected: the viewer's extended
+read (`8, 9, 10, 24, 25, 26`) is entirely inside the blank VRAM column,
+so all tilemap background stays true black.
+
+Any real Mode 5 hires game that dense-packs its 16x16 BG2 tileset would
+trigger the same quirk in this Viewer — it is not worth reverting to a
+sparse step-4 layout just to please the debugger.
 
 ### Checksum is written post-link, not assembled
 

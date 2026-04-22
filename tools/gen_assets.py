@@ -21,10 +21,13 @@ Three independent targets:
 
   mode5_2bpp/
     palette.bin       4-color 2bpp palette, 8 bytes (same art as mode0)
-    tiles.2bpp.chr    2bpp tile data (same 18 tiles as mode0, layout 0,1,16,17)
-    tilemap.bin       32x32 BG2 tilemap; ONE entry holds the whole character
-                      because Mode 5 BG2 is configured with 16x16 tile size
-                      (BGMODE bit 5) so the PPU auto-reads N, N+1, N+16, N+17.
+    tiles.2bpp.chr    2bpp tile data, 24 tiles (four 16x16 characters
+                      dense-packed at N=0,2,4,6 + blank slot at 8)
+    tilemap.bin       32x32 BG2 tilemap; FOUR non-blank entries (one per
+                      screen corner) hold the top-left index of each
+                      character because Mode 5 BG2 is configured with
+                      16x16 tile size (BGMODE bit 5) so the PPU auto-reads
+                      N, N+1, N+16, N+17 from a single entry.
     preview.png       expected screen preview (512x448, 2x upscaled)
     -> Mode 5 is horizontal hi-res (512 px) and this demo runs with
        interlace on, so the effective resolution is 512x448. The 16x16
@@ -96,21 +99,42 @@ CHAR4_TILE_POS_16 = (30, 26)          # mode5 bottom-right
 # character occupies four VRAM tile slots in that exact pattern. The
 # indices are chosen so that 8x8-tile modes can reference all four slots
 # explicitly and 16x16-tile modes can reference only the top-left slot.
-# Base indices step by 4 (mod 16) to avoid collisions with the N..N+17
-# auto-read pattern, so each character gets its own four-slot block.
-CHAR1_INDICES = (0, 1, 16, 17)        # default character (first 2x2 block)
-CHAR2_INDICES = (4, 5, 20, 21)        # mode5 only: top-right tile
-CHAR3_INDICES = (8, 9, 24, 25)        # mode5 only: bottom-left tile
-CHAR4_INDICES = (12, 13, 28, 29)      # mode5 only: bottom-right tile
-BLANK_INDEX = 2
+#
+# Base indices step by 2: N, N+1 sit next to each other in the top VRAM
+# row and N+16, N+17 sit next to each other in the row below, so four
+# consecutive characters fit back-to-back without wasting slots. This is
+# the same dense packing real SNES games use for 16x16 BG tilesets.
+#
+# Known bsnes-plus Tilemap Viewer quirk: in Mode 5 hires + 16x16 it
+# reads eight tiles per cell instead of four, pulling in the next
+# character's left column as a ghost on three of the four corners. This
+# is a debugger bug, not a ROM bug; hardware and the emulator output
+# window are correct. See docs/AI-README.md section "bsnes-plus Tilemap
+# Viewer quirk in Mode 5 hires + 16x16" for the full breakdown.
+CHAR1_INDICES = (0, 1, 16, 17)        # first 2x2 block
+CHAR2_INDICES = (2, 3, 18, 19)        # mode5 only: top-right tile
+CHAR3_INDICES = (4, 5, 20, 21)        # mode5 only: bottom-left tile
+CHAR4_INDICES = (6, 7, 22, 23)        # mode5 only: bottom-right tile
+
+# BLANK_INDEX points to a reserved 16x16 "transparent" super-tile sitting
+# in the free VRAM column right after the four characters. For Mode 5
+# hardware auto-read pulls in tiles 8, 9, 24, 25 (all zero: 8..15 are
+# padding inside the upload, 24, 25 stay zero from the boot-time VRAM
+# clear). bsnes-plus' Mode 5 hires Tilemap Viewer additionally pulls in
+# tiles 10 and 26; those are also zero for the same reasons. So empty
+# tilemap entries render as true black in every viewer and on hardware.
+# For the 8x8-tile mode0/mode1 targets this same slot is equally fine —
+# tile 8 is inside DEFAULT_TILES_TO_UPLOAD but not touched by any
+# character, so build_vram_tiles leaves it as the all-zero blank_tile.
+BLANK_INDEX = 8
 
 # How many tiles each target uploads to VRAM. Mode0/Mode1 only need the
-# default character (indices 0,1,16,17) plus the blank tile at index 2,
-# so 18 tiles (0..17) cover everything used. Mode5 uses four characters
-# whose highest VRAM index is 29 (CHAR4_BR_INDEX), so it must upload
-# 30 tiles (indices 0..29).
+# default character (indices 0,1,16,17); uploading 18 tiles (0..17)
+# comfortably covers both the character and the blank tile at index 8.
+# Mode5 uses four 16x16 characters whose highest VRAM index is 23
+# (CHAR4_INDICES[3]), so it must upload 24 tiles (indices 0..23).
 DEFAULT_TILES_TO_UPLOAD = 18
-MODE5_TILES_TO_UPLOAD = 30
+MODE5_TILES_TO_UPLOAD = 24
 
 
 def render_2bpp_character_pixels():

@@ -23,9 +23,23 @@
 ; - BG2 is 2bpp in Mode 5, matching the mode0 asset pack bit-for-bit. The
 ;   palette goes to BG2 palette slot 0 (CGRAM $00..$07).
 ; - With BGMODE bit 5 set, the PPU reads 4 consecutive 8x8 tiles
-;   (N, N+1, N+16, N+17) per tilemap entry to form a 16x16 BG tile. The
-;   mode0 asset already stores the character at exactly indices 0,1,16,17,
-;   so one tilemap entry (index 0) paints the whole character.
+;   (N, N+1, N+16, N+17) per tilemap entry to form a 16x16 BG tile.
+;   Characters are dense-packed in 2-tile steps: cross at N=0, diagonal X
+;   at N=2, filled square at N=4, checkerboard at N=6. One tilemap entry
+;   per top-left index paints a whole 16x16 character. The blank tilemap
+;   index is 8 (reserved transparent super-tile right after the four
+;   characters).
+;
+; Known bsnes-plus debugger quirk (NOT a ROM bug):
+;   The Tilemap Viewer renders each Mode 5 hires 16x16 cell as 32x16
+;   pixels, reading eight VRAM tiles per entry:
+;       c,    c+1,  c+1,  c+2
+;       c+16, c+17, c+17, c+18
+;   instead of the hardware's four (c, c+1, c+16, c+17). With the dense
+;   layout, c+2 and c+18 are the next character's left column, so three
+;   of the four corners show a ghost of their neighbour glued to the
+;   right in the Viewer. Hardware and the emulator output window are
+;   correct. See docs/AI-README.md for the full per-corner breakdown.
 ; ------------------------------------------------------------
 
 INIDISP   = $2100
@@ -196,16 +210,18 @@ Reset:
     lda #$01
     sta MDMAEN
 
-    ; Upload 30 BG2 tiles in 2bpp format (16 bytes per tile). Mode 5
-    ; uses four 16x16 characters:
-    ;   indices 0,1,16,17   -> cross         (top-left)
-    ;   indices 4,5,20,21   -> diagonal X    (top-right)
-    ;   indices 8,9,24,25   -> filled square (bottom-left)
-    ;   indices 12,13,28,29 -> checkerboard  (bottom-right)
-    ; All other slots between 0 and 29 are blank padding; the PPU still
-    ; reads all four sub-tiles (N, N+1, N+16, N+17) from a single
-    ; tilemap entry in 16x16 mode.
-    ; 30 * 16 = 480 bytes ($01E0).
+    ; Upload 24 BG2 tiles in 2bpp format (16 bytes per tile). Mode 5
+    ; uses four dense-packed 16x16 characters:
+    ;   indices 0,1,16,17   -> cross         (top-left on screen)
+    ;   indices 2,3,18,19   -> diagonal X    (top-right on screen)
+    ;   indices 4,5,20,21   -> filled square (bottom-left on screen)
+    ;   indices 6,7,22,23   -> checkerboard  (bottom-right on screen)
+    ; Slots 8..15 sit between the character's top row (0..7) and bottom
+    ; row (16..23) in VRAM and are uploaded as blank padding; tilemap
+    ; entry 8 therefore references a transparent 16x16 super-tile. The
+    ; PPU still reads all four sub-tiles (N, N+1, N+16, N+17) from a
+    ; single tilemap entry in 16x16 mode.
+    ; 24 * 16 = 384 bytes ($0180).
     stz VMADDL
     stz VMADDH
     lda #$80
@@ -220,7 +236,7 @@ Reset:
     sta DMA0SRC+1
     lda #^TileData
     sta DMA0SRCB
-    lda #$E0            ; 480 bytes = $01E0
+    lda #$80            ; 384 bytes = $0180
     sta DMA0SIZE
     lda #$01
     sta DMA0SIZE+1

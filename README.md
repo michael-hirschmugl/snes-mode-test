@@ -50,8 +50,8 @@ build/
     preview.png        # expected picture (3x upscaled)
   mode5_2bpp/
     palette.bin        # same bytes as mode0_2bpp/palette.bin
-    tiles.2bpp.chr     # 2bpp tile data: 30 tiles x 16 bytes = 480 bytes
-                       # (covers four distinct 16x16 characters)
+    tiles.2bpp.chr     # 2bpp tile data: 24 tiles x 16 bytes = 384 bytes
+                       # (four dense-packed 16x16 characters + blank slot)
     tilemap.bin        # 32x32 BG2 tilemap; FOUR entries (one per screen corner)
     preview.png        # expected picture for 512x448 (2x upscaled)
 ```
@@ -109,8 +109,8 @@ Differences between the three demos:
 | -------------- | ------------------- | ------------------- | --------------------------------- |
 | `BGMODE`       | `$01`               | `$00`               | `$25` (mode 5 + BG2 16×16 tiles)  |
 | Palette upload | 32 bytes, 16 colors | 8 bytes, 4 colors   | 8 bytes, 4 colors                 |
-| Tile upload    | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 480 bytes (`$01E0`)               |
-| Tile count     | 18 tiles            | 18 tiles            | 30 tiles (covers four characters) |
+| Tile upload    | 576 bytes (`$0240`) | 288 bytes (`$0120`) | 384 bytes (`$0180`)               |
+| Tile count     | 18 tiles            | 18 tiles            | 24 tiles (covers four characters) |
 | Tile size      | 32 B (4 bitplanes)  | 16 B (2 bitplanes)  | 16 B (2 bitplanes)                |
 | `TM` / `TS`    | `$01` / `$00`       | `$01` / `$00`       | `$02` / `$02` (BG2 on main + sub) |
 | `SETINI`       | `$00`               | `$00`               | `$01` (interlace on)              |
@@ -120,11 +120,13 @@ index `N` and the PPU auto-reads `N, N+1, N+16, N+17` as the four 8×8
 sub-tiles of a 16×16 screen block. The Mode 0 / Mode 1 VRAM layout
 (character at indices `0, 1, 16, 17`) is byte-compatible with that
 auto-read, so Mode 5's first character is the same cross tile used by
-the other builds. Mode 5 then additionally stores **three** further
-characters at indices `(4,5,20,21)`, `(8,9,24,25)` and `(12,13,28,29)`
-— same pattern, next free 2×2 blocks — so it needs a larger
-`tiles.2bpp.chr` (30 tiles / 480 bytes). The palette stays identical
-to Mode 0; only `tiles.2bpp.chr` and `tilemap.bin` differ.
+the other builds. Mode 5 dense-packs three further characters right
+next to it at indices `(2,3,18,19)`, `(4,5,20,21)` and `(6,7,22,23)`
+(step of two — each character sits in the next free `N, N+1, N+16, N+17`
+block without gaps), so it needs `tiles.2bpp.chr` with 24 tiles /
+384 bytes. Slot `8` is reserved as the transparent super-tile used by
+all "empty" tilemap entries. The palette stays identical to Mode 0;
+only `tiles.2bpp.chr` and `tilemap.bin` differ.
 
 ### VRAM tile layout
 
@@ -137,26 +139,27 @@ Mode 0 / Mode 1 (one character):
 ```
 index  0 = character top-left
 index  1 = character top-right
-index  2 = blank tile (used as tilemap background)
+index  8 = blank tile (used as tilemap background)
 index 16 = character bottom-left
 index 17 = character bottom-right
 ```
 
-Mode 5 (four characters, same N, N+1, N+16, N+17 pattern, each 2×2
-block 4 indices apart):
+Mode 5 (four characters, same N, N+1, N+16, N+17 pattern, dense-packed
+with each 2×2 block only 2 indices apart):
 
 ```
 indices  0, 1, 16, 17 = character 1 (cross)
-indices  4, 5, 20, 21 = character 2 (diagonal X)
-indices  8, 9, 24, 25 = character 3 (filled square)
-indices 12,13, 28, 29 = character 4 (checkerboard)
-index            2    = blank tile (tilemap background)
+indices  2, 3, 18, 19 = character 2 (diagonal X)
+indices  4, 5, 20, 21 = character 3 (filled square)
+indices  6, 7, 22, 23 = character 4 (checkerboard)
+index            8    = blank tile (transparent 16x16 super-tile;
+                         auto-reads 8, 9, 24, 25 — all zero)
 ```
 
 For the 8×8-tile modes (Mode 0 / Mode 1), the tilemap is filled with
-index `2` everywhere and the center (tile position `14,11`) holds the
+index `8` everywhere and the center (tile position `14,11`) holds the
 four character indices as four separate tilemap entries. For Mode 5
-(BG2 16×16-tile mode), the tilemap is still filled with index `2`
+(BG2 16×16-tile mode), the tilemap is still filled with index `8`
 everywhere, but **four** entries at tile positions `(1,1)`, `(30,1)`,
 `(1,26)` and `(30,26)` (in 16×16-tile units) hold the top-left index
 of each character, and the PPU auto-assembles the four 8×8 sub-tiles
@@ -164,6 +167,22 @@ into the on-screen 16×16 block. The corner positions are nudged one
 16×16 cell inside the edge of the 512×448 screen so they stay outside
 the overscan mask that bsnes-plus and real PAL TVs hide at the screen
 borders.
+
+### bsnes-plus Tilemap Viewer quirk (Mode 5 hires + 16×16)
+
+On hardware and in the emulator output window everything is correct.
+The bsnes-plus *Tilemap Viewer* however renders each Mode 5 hires 16×16
+tilemap cell as **32×16 px** by reading eight VRAM tiles per entry
+(`c, c+1, c+1, c+2 / c+16, c+17, c+17, c+18`) instead of the hardware's
+four. See
+[`tilemap-renderer.cpp`](https://github.com/devinacker/bsnes-plus/blob/master/bsnes/ui-qt/debugger/ppu/tilemap-renderer.cpp)
+(`drawMapTile` + `drawMap8pxTile`). With the dense-packed tileset the
+extra `c+2 / c+18` read lands on the next character's left column, so
+three of the four corners appear in the Viewer with a ghost of their
+neighbour glued to the right. Empty cells (`BLANK_INDEX = 8`) stay
+clean because tiles 8–10 and 24–26 are all zero. Real Mode 5 hires
+games that dense-pack their BG2 tileset would trigger the same quirk in
+this Viewer; `docs/AI-README.md` has the full per-corner breakdown.
 
 ### Why `tilemap.bin` has no bit-depth suffix
 
@@ -192,7 +211,7 @@ asset set per invocation:
 ```bash
 python3 tools/gen_assets.py mode0_2bpp   # 4-color palette, indices 0..3
 python3 tools/gen_assets.py mode1_4bpp   # 16-color palette, indices 0..15
-python3 tools/gen_assets.py mode5_2bpp   # mode0 cross tile + 3 extra 16x16 tiles
+python3 tools/gen_assets.py mode5_2bpp   # 4 dense-packed 16x16 characters + blank
 python3 tools/gen_assets.py all          # regenerate all three
 ```
 
