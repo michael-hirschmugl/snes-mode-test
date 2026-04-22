@@ -4,6 +4,13 @@ Internal orientation document for AI agents working on this repository.
 Meant to be read **before** editing code. Keep it up to date when the
 architecture, conventions or common pitfalls change.
 
+> **Working on Mode 5?** Read
+> [`AI-MODE-5-README.md`](AI-MODE-5-README.md) as well. It is a focused
+> cookbook covering: the 512×448 overscan safe area, **dense packing**
+> as the preferred 16×16 tileset layout, how BG2 (2bpp) is set up in
+> this repo, what to do to add BG1 (4bpp) on top, CGRAM sharing rules,
+> and a full PNG → 2bpp / 4bpp conversion pipeline.
+
 ---
 
 ## High-level architecture

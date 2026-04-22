@@ -230,6 +230,17 @@ is out of date.
 8bpp (Mode 3/4 BG1) is **not** supported; add a new branch in
 `tile_to_bitplanes` if you need it.
 
+## Further reading
+
+- [`docs/AI-README.md`](docs/AI-README.md) — project-wide reference
+  for AI agents and new contributors (conventions, init sequence,
+  per-target asset pipeline, bsnes-plus viewer quirks).
+- [`docs/AI-MODE-5-README.md`](docs/AI-MODE-5-README.md) — focused
+  **Mode 5 cookbook**: how tilesets and tilemaps must be laid out so
+  BG2 (2bpp) and BG1 (4bpp) render correctly, why **dense packing** is
+  the preferred VRAM layout, what the overscan-safe area is, and how
+  to turn a full-screen 512×448 PNG into 2bpp / 4bpp assets.
+
 ## License
 
 Public Domain / MIT — do whatever you want.
