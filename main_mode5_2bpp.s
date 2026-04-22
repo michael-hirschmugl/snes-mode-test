@@ -6,9 +6,12 @@
 ; - Hardware-safe init sequence
 ; - Mode 5 (BG1 = 4bpp, BG2 = 2bpp), interlace on
 ; - BG2 only, configured with 16x16 tile size (BGMODE bit 5)
-; - Shows the same 2bpp 16x16 character as the mode0 demo, but Mode 5's
-;   horizontal hi-res combined with interlace doubles both axes, so the
-;   character appears at half the physical size of the mode0 preview.
+; - Shows four different 2bpp 16x16 characters at the four screen
+;   corners (each nudged one tile inside the edge to stay outside the
+;   overscan mask): cross, diagonal-X, filled square and checkerboard.
+;   Mode 5's horizontal hi-res combined with interlace doubles both
+;   axes, so each character appears at half the physical size of the
+;   mode0 preview.
 ;
 ; Notes on Mode 5 specifics:
 ; - Mode 5 is inherently horizontal hi-res (512 px wide). Main-screen
@@ -193,11 +196,16 @@ Reset:
     lda #$01
     sta MDMAEN
 
-    ; Upload 18 BG2 tiles in 2bpp format (16 bytes per tile). Character
-    ; tiles sit at indices 0,1,16,17 and the rest are blank padding, which
-    ; is exactly what BG2's 16x16-tile mode expects when reading the four
-    ; sub-tiles (N, N+1, N+16, N+17) from a single tilemap entry.
-    ; 18 * 16 = 288 bytes ($0120).
+    ; Upload 30 BG2 tiles in 2bpp format (16 bytes per tile). Mode 5
+    ; uses four 16x16 characters:
+    ;   indices 0,1,16,17   -> cross         (top-left)
+    ;   indices 4,5,20,21   -> diagonal X    (top-right)
+    ;   indices 8,9,24,25   -> filled square (bottom-left)
+    ;   indices 12,13,28,29 -> checkerboard  (bottom-right)
+    ; All other slots between 0 and 29 are blank padding; the PPU still
+    ; reads all four sub-tiles (N, N+1, N+16, N+17) from a single
+    ; tilemap entry in 16x16 mode.
+    ; 30 * 16 = 480 bytes ($01E0).
     stz VMADDL
     stz VMADDH
     lda #$80
@@ -212,7 +220,7 @@ Reset:
     sta DMA0SRC+1
     lda #^TileData
     sta DMA0SRCB
-    lda #$20            ; 288 bytes = $0120
+    lda #$E0            ; 480 bytes = $01E0
     sta DMA0SIZE
     lda #$01
     sta DMA0SIZE+1
@@ -220,9 +228,10 @@ Reset:
     sta MDMAEN
 
     ; Upload full 32x32 tilemap (2048 bytes) at VRAM word $1000. With
-    ; 16x16 tile size each entry spans a 16x16 screen region, so the
-    ; character occupies exactly one tilemap entry (generated near the
-    ; center by gen_assets.py's mode5_2bpp target).
+    ; 16x16 tile size each entry spans a 16x16 screen region; Mode 5's
+    ; tilemap contains exactly four non-blank entries (the four
+    ; character top-left indices placed by gen_assets.py's mode5_2bpp
+    ; target, one near each screen corner).
     lda #$00
     sta VMADDL
     lda #$10

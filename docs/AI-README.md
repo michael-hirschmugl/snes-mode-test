@@ -28,9 +28,17 @@ They diverge on:
 
 - Mode 1 / Mode 0 use BG1 with 8×8 tiles; the tilemap has four entries
   around tile position `14,11` pointing at indices `0, 1, 16, 17`.
-- Mode 5 uses BG2 with 16×16 tiles (BGMODE bit 5); the tilemap has a
-  single entry at 16×16-tile position `15,13` pointing at index `0`,
-  and the PPU assembles the whole character from that one entry.
+- Mode 5 uses BG2 with 16×16 tiles (BGMODE bit 5); the tilemap has
+  four non-blank entries, one near each screen corner:
+  - `(1,  1)`  -> index `0`  (cross tile)
+  - `(30, 1)`  -> index `4`  (diagonal-X variant)
+  - `(1,  26)` -> index `8`  (filled-square variant)
+  - `(30, 26)` -> index `12` (checkerboard variant)
+
+  Each position is nudged one 16×16 cell inside the edge of the
+  512×448 screen so it sits outside the emulator / TV overscan mask.
+  The PPU assembles each whole character from its single tilemap entry
+  via the 16×16 auto-read pattern.
 - Mode 5 enables interlace via `SETINI` bit 0 and enables BG2 on **both**
   TM and TS, because Mode 5's horizontal hi-res only shows the full 512
   px wide image if main+sub are both populated.
@@ -147,7 +155,20 @@ not the same as Mode 0's because BG2 runs in 16×16-tile mode in that
 demo: the PPU reads one entry per 16×16 screen region and auto-fetches
 tiles `N, N+1, N+16, N+17` from VRAM. The Mode 5 tilemap therefore has
 exactly one non-blank entry (tile `0` at 16×16-position `15,13`)
-whereas Mode 0/1 have four non-blank entries.
+whereas Mode 0/1 have four non-blank entries per character. The Mode 5
+demo uses **four** distinct characters, one near each corner of the
+512×448 screen:
+
+- cross tile at `(1,  1)`  with VRAM indices `0,1,16,17`
+- diagonal-X at `(30, 1)`  with VRAM indices `4,5,20,21`
+- filled square at `(1,  26)` with VRAM indices `8,9,24,25`
+- checkerboard at `(30, 26)` with VRAM indices `12,13,28,29`
+
+Each position is nudged one 16×16 cell inside the edge because a flush
+`(0/31, *)` or `(*, 0/27)` position would put the tile inside the
+overscan mask that bsnes-plus and real PAL TVs hide at the screen
+borders. Mode 0/1 place their single character near the center of the
+256×224 screen.
 
 ### Blank tile at index 2
 
@@ -244,10 +265,13 @@ mistake causes silent boot failure on real hardware and most emulators.
 ### 5. Changing tile count without updating DMA size
 
 `main_mode1_4bpp.s` uploads `18 × 32 = 576` bytes (`$0240`).
-`main_mode0_2bpp.s` and `main_mode5_2bpp.s` each upload `18 × 16 = 288`
-bytes (`$0120`). If `TILES_TO_UPLOAD` changes in `gen_assets.py`, all
-three DMA0SIZE constants must change in lockstep, per bit depth. There
-is no runtime check.
+`main_mode0_2bpp.s` uploads `18 × 16 = 288` bytes (`$0120`).
+`main_mode5_2bpp.s` uploads `30 × 16 = 480` bytes (`$01E0`) because it
+covers four characters using VRAM indices up to `29` inclusive. Each
+target has its own `tiles_to_upload` value in the `TARGETS` dict of
+`gen_assets.py`; if you change it, the matching DMA0SIZE constant in
+the corresponding `main_*.s` must change in lockstep. There is no
+runtime check.
 
 ### 6. Palette size mismatch
 

@@ -81,21 +81,36 @@ PALETTE_4BPP_BGR555 = [
 # Default 2x2 tile character placement on the BG tilemap, expressed in
 # tile-units. For 8x8-tile targets this is 8x8 pixel units, for 16x16-tile
 # targets (Mode 5 BG2 with BGMODE bit 5 set) this is 16x16 pixel units.
-CHAR_TILE_X_8 = 14
-CHAR_TILE_Y_8 = 11
-CHAR_TILE_X_16 = 15
-CHAR_TILE_Y_16 = 13
+CHAR_TILE_POS_8 = (14, 11)            # mode0/mode1: near screen center
+# Mode 5 screen is 512x448 = 32x28 cells of 16x16 BG tiles. The four
+# corner positions are nudged one cell inside the edge so they stay in
+# the safe display area (bsnes-plus and real PAL TVs hide a few pixels
+# of overscan at every border).
+CHAR1_TILE_POS_16 = (1, 1)            # mode5 top-left
+CHAR2_TILE_POS_16 = (30, 1)           # mode5 top-right
+CHAR3_TILE_POS_16 = (1, 26)           # mode5 bottom-left
+CHAR4_TILE_POS_16 = (30, 26)          # mode5 bottom-right
 
-# VRAM tile indices used by all modes (see README: 2x2 grid layout in VRAM).
-# In 16x16-tile modes the PPU auto-assembles (N, N+1, N+16, N+17) from a
-# single tilemap entry, which matches this exact layout so the same tile
-# data works for both 8x8-tile and 16x16-tile BG modes.
-CHAR_TL_INDEX = 0
-CHAR_TR_INDEX = 1
+# VRAM tile indices for the 2x2 layout. In 16x16-tile modes the PPU auto-
+# assembles (N, N+1, N+16, N+17) from a single tilemap entry, so each
+# character occupies four VRAM tile slots in that exact pattern. The
+# indices are chosen so that 8x8-tile modes can reference all four slots
+# explicitly and 16x16-tile modes can reference only the top-left slot.
+# Base indices step by 4 (mod 16) to avoid collisions with the N..N+17
+# auto-read pattern, so each character gets its own four-slot block.
+CHAR1_INDICES = (0, 1, 16, 17)        # default character (first 2x2 block)
+CHAR2_INDICES = (4, 5, 20, 21)        # mode5 only: top-right tile
+CHAR3_INDICES = (8, 9, 24, 25)        # mode5 only: bottom-left tile
+CHAR4_INDICES = (12, 13, 28, 29)      # mode5 only: bottom-right tile
 BLANK_INDEX = 2
-CHAR_BL_INDEX = 16
-CHAR_BR_INDEX = 17
-TILES_TO_UPLOAD = 18
+
+# How many tiles each target uploads to VRAM. Mode0/Mode1 only need the
+# default character (indices 0,1,16,17) plus the blank tile at index 2,
+# so 18 tiles (0..17) cover everything used. Mode5 uses four characters
+# whose highest VRAM index is 29 (CHAR4_BR_INDEX), so it must upload
+# 30 tiles (indices 0..29).
+DEFAULT_TILES_TO_UPLOAD = 18
+MODE5_TILES_TO_UPLOAD = 30
 
 
 def render_2bpp_character_pixels():
@@ -115,6 +130,68 @@ def render_2bpp_character_pixels():
     for y in range(6, 10):
         for x in range(6, 10):
             pixels[y][x] = 3
+    return pixels
+
+
+def render_2bpp_character2_pixels():
+    """Second 16x16 pixel art, also constrained to palette indices 0..3.
+
+    Visually distinct from `render_2bpp_character_pixels` so the Mode 5
+    demo clearly shows two different tiles side by side:
+
+    - border of color 1 (white)
+    - diagonal X through the tile in color 2 (green)
+    - 2x2 center block in color 3 (blue)
+    """
+    pixels = [[0 for _ in range(CHAR_W)] for _ in range(CHAR_H)]
+    for y in range(CHAR_H):
+        for x in range(CHAR_W):
+            if x in (0, CHAR_W - 1) or y in (0, CHAR_H - 1):
+                pixels[y][x] = 1
+            if x == y or x == CHAR_W - 1 - y:
+                pixels[y][x] = 2
+    for y in range(7, 9):
+        for x in range(7, 9):
+            pixels[y][x] = 3
+    return pixels
+
+
+def render_2bpp_character3_pixels():
+    """Third 16x16 pixel art, palette indices 0..3 only.
+
+    Visually distinct from the other three Mode 5 tiles:
+
+    - border of color 1 (white)
+    - solid 12x12 filled interior in color 3 (blue)
+    """
+    pixels = [[0 for _ in range(CHAR_W)] for _ in range(CHAR_H)]
+    for y in range(CHAR_H):
+        for x in range(CHAR_W):
+            if x in (0, CHAR_W - 1) or y in (0, CHAR_H - 1):
+                pixels[y][x] = 1
+            elif 2 <= x <= CHAR_W - 3 and 2 <= y <= CHAR_H - 3:
+                pixels[y][x] = 3
+    return pixels
+
+
+def render_2bpp_character4_pixels():
+    """Fourth 16x16 pixel art, palette indices 0..3 only.
+
+    Visually distinct from the other three Mode 5 tiles:
+
+    - border of color 1 (white)
+    - 2x2-block checkerboard of colors 2 (green) and 3 (blue) filling
+      the 14x14 interior
+    """
+    pixels = [[0 for _ in range(CHAR_W)] for _ in range(CHAR_H)]
+    for y in range(CHAR_H):
+        for x in range(CHAR_W):
+            if x in (0, CHAR_W - 1) or y in (0, CHAR_H - 1):
+                pixels[y][x] = 1
+            else:
+                block_x = (x - 1) // 2
+                block_y = (y - 1) // 2
+                pixels[y][x] = 2 if (block_x + block_y) % 2 == 0 else 3
     return pixels
 
 
@@ -204,35 +281,55 @@ def split_character_tiles(pixels, bpp):
     return quads
 
 
-def build_vram_tiles(character_tiles, blank_tile):
-    tiles = [blank_tile] * TILES_TO_UPLOAD
-    tiles[CHAR_TL_INDEX] = character_tiles[0]
-    tiles[CHAR_TR_INDEX] = character_tiles[1]
-    tiles[CHAR_BL_INDEX] = character_tiles[2]
-    tiles[CHAR_BR_INDEX] = character_tiles[3]
+def build_vram_tiles(character_tile_sets, blank_tile, tiles_to_upload):
+    """Lay out VRAM tile data for upload.
+
+    character_tile_sets is a list of (quads, indices) pairs where:
+      - quads is the 4-tile character produced by split_character_tiles
+      - indices is a (tl, tr, bl, br) tuple giving VRAM tile slots
+
+    Slots not populated by any character are filled with `blank_tile`.
+    """
+    tiles = [blank_tile] * tiles_to_upload
+    for quads, (tl, tr, bl, br) in character_tile_sets:
+        tiles[tl] = quads[0]
+        tiles[tr] = quads[1]
+        tiles[bl] = quads[2]
+        tiles[br] = quads[3]
     return bytearray().join(tiles)
 
 
-def build_tilemap(tile_pixels_size):
-    """Build a 32x32 BG tilemap that places the character near center.
+def build_tilemap(tile_pixels_size, placements):
+    """Build a 32x32 BG tilemap that places one or more characters.
 
-    tile_pixels_size = 8  -> four 8x8 entries (0,1,16,17) at (14,11)
-    tile_pixels_size = 16 -> one 16x16 entry (index 0) at (15,13); in this
-                             mode the PPU auto-reads N, N+1, N+16, N+17
-                             per tilemap entry, so a single entry covers
-                             the whole 2x2 VRAM tile block.
+    `placements` is a list of (tile_pos, vram_indices) pairs, where:
+      - tile_pos = (x, y) in tile units (8x8 or 16x16 pixels depending
+        on the BG's configured tile size).
+      - vram_indices = (tl, tr, bl, br) — the VRAM tile indices making
+        up the character's 2x2 layout.
+
+    tile_pixels_size = 8  -> each character writes four entries
+                             (tl, tr, bl, br) into the tilemap.
+    tile_pixels_size = 16 -> each character writes a single entry (the
+                             top-left index); the PPU auto-reads
+                             N, N+1, N+16, N+17 per tilemap entry, so
+                             a single entry covers the whole 2x2 VRAM
+                             tile block.
     """
     tm = [BLANK_INDEX] * (32 * 32)
-    if tile_pixels_size == 8:
-        base = CHAR_TILE_Y_8 * 32 + CHAR_TILE_X_8
-        tm[base] = CHAR_TL_INDEX
-        tm[base + 1] = CHAR_TR_INDEX
-        tm[base + 32] = CHAR_BL_INDEX
-        tm[base + 33] = CHAR_BR_INDEX
-    elif tile_pixels_size == 16:
-        tm[CHAR_TILE_Y_16 * 32 + CHAR_TILE_X_16] = CHAR_TL_INDEX
-    else:
-        raise ValueError(f"unsupported tile_pixels_size {tile_pixels_size}")
+    for (tile_x, tile_y), (tl, tr, bl, br) in placements:
+        if tile_pixels_size == 8:
+            base = tile_y * 32 + tile_x
+            tm[base] = tl
+            tm[base + 1] = tr
+            tm[base + 32] = bl
+            tm[base + 33] = br
+        elif tile_pixels_size == 16:
+            tm[tile_y * 32 + tile_x] = tl
+        else:
+            raise ValueError(
+                f"unsupported tile_pixels_size {tile_pixels_size}"
+            )
     out = bytearray()
     for entry in tm:
         out.append(entry & 0xFF)
@@ -247,12 +344,18 @@ def bgr555_to_rgb(c):
     return (r, g, b)
 
 
-def build_preview(pixels, palette_bgr555, bpp, tile_pixels_size, screen_size):
+def build_preview(
+    rendered_characters, palette_bgr555, bpp, tile_pixels_size, screen_size
+):
     """Render a 1:1 preview of what the ROM should show, then upscale.
 
+    rendered_characters is a list of (pixels, tile_pos) pairs giving
+    each character's 16x16 pixel bitmap and its tilemap position.
+
     screen_size = (256, 224) for standard modes, (512, 448) for Mode 5
-                  + interlace hi-res. The character's pixel origin is
-                  derived from the same tile-units as build_tilemap().
+                  + interlace hi-res. The tile-unit-to-pixel origin is
+                  derived from the same tile_pixels_size as
+                  build_tilemap().
     """
     slots = PALETTE_COLORS[bpp]
     rgb = [bgr555_to_rgb(c) for c in palette_bgr555]
@@ -260,15 +363,14 @@ def build_preview(pixels, palette_bgr555, bpp, tile_pixels_size, screen_size):
         rgb.append((0, 0, 0))
     screen_w, screen_h = screen_size
     img = Image.new("RGB", (screen_w, screen_h), rgb[0])
-    if tile_pixels_size == 8:
-        origin_x = CHAR_TILE_X_8 * 8
-        origin_y = CHAR_TILE_Y_8 * 8
-    else:
-        origin_x = CHAR_TILE_X_16 * 16
-        origin_y = CHAR_TILE_Y_16 * 16
-    for y in range(CHAR_H):
-        for x in range(CHAR_W):
-            img.putpixel((origin_x + x, origin_y + y), rgb[pixels[y][x]])
+    for pixels, (tile_x, tile_y) in rendered_characters:
+        origin_x = tile_x * tile_pixels_size
+        origin_y = tile_y * tile_pixels_size
+        for y in range(CHAR_H):
+            for x in range(CHAR_W):
+                img.putpixel(
+                    (origin_x + x, origin_y + y), rgb[pixels[y][x]]
+                )
     # Smaller screens get 3x upscale; the 512x448 hi-res preview stays at
     # 2x so the PNG doesn't explode in size while still being inspectable.
     upscale = 3 if screen_w <= 256 else 2
@@ -284,29 +386,68 @@ TARGETS = {
         "bpp": 2,
         "chr_name": "tiles.2bpp.chr",
         "palette": PALETTE_2BPP_BGR555,
-        "render_pixels": render_2bpp_character_pixels,
         "tile_pixels_size": 8,
         "screen_size": (256, 224),
+        "tiles_to_upload": DEFAULT_TILES_TO_UPLOAD,
+        "characters": [
+            {
+                "render_pixels": render_2bpp_character_pixels,
+                "tile_pos": CHAR_TILE_POS_8,
+                "vram_indices": CHAR1_INDICES,
+            },
+        ],
     },
     "mode1_4bpp": {
         "bpp": 4,
         "chr_name": "tiles.4bpp.chr",
         "palette": PALETTE_4BPP_BGR555,
-        "render_pixels": render_4bpp_character_pixels,
         "tile_pixels_size": 8,
         "screen_size": (256, 224),
+        "tiles_to_upload": DEFAULT_TILES_TO_UPLOAD,
+        "characters": [
+            {
+                "render_pixels": render_4bpp_character_pixels,
+                "tile_pos": CHAR_TILE_POS_8,
+                "vram_indices": CHAR1_INDICES,
+            },
+        ],
     },
     "mode5_2bpp": {
         "bpp": 2,
         "chr_name": "tiles.2bpp.chr",
         "palette": PALETTE_2BPP_BGR555,
-        "render_pixels": render_2bpp_character_pixels,
         # Mode 5 BG2 with BGMODE bit 5 set uses 16x16 BG tiles assembled
         # from the same N, N+1, N+16, N+17 VRAM layout as mode0.
         "tile_pixels_size": 16,
         # Mode 5 is horizontal hi-res; with interlace on, the effective
         # display is 512x448, so previews are rendered at that size.
         "screen_size": (512, 448),
+        # Mode 5 uploads four characters (cross, X, filled square,
+        # checkerboard) arranged at all four screen corners, so Mode 5's
+        # VRAM must cover tile indices up to 29 inclusive.
+        "tiles_to_upload": MODE5_TILES_TO_UPLOAD,
+        "characters": [
+            {
+                "render_pixels": render_2bpp_character_pixels,
+                "tile_pos": CHAR1_TILE_POS_16,
+                "vram_indices": CHAR1_INDICES,
+            },
+            {
+                "render_pixels": render_2bpp_character2_pixels,
+                "tile_pos": CHAR2_TILE_POS_16,
+                "vram_indices": CHAR2_INDICES,
+            },
+            {
+                "render_pixels": render_2bpp_character3_pixels,
+                "tile_pos": CHAR3_TILE_POS_16,
+                "vram_indices": CHAR3_INDICES,
+            },
+            {
+                "render_pixels": render_2bpp_character4_pixels,
+                "tile_pos": CHAR4_TILE_POS_16,
+                "vram_indices": CHAR4_INDICES,
+            },
+        ],
     },
 }
 
@@ -316,24 +457,40 @@ def generate_target(name):
     bpp = spec["bpp"]
     chr_name = spec["chr_name"]
     palette = spec["palette"]
-    pixels = spec["render_pixels"]()
     tile_pixels_size = spec["tile_pixels_size"]
     screen_size = spec["screen_size"]
+    tiles_to_upload = spec["tiles_to_upload"]
 
     target_dir = BUILD / name
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    character_tiles = split_character_tiles(pixels, bpp)
+    rendered = [
+        (c["render_pixels"](), c["tile_pos"], c["vram_indices"])
+        for c in spec["characters"]
+    ]
+    character_tile_sets = [
+        (split_character_tiles(pixels, bpp), vram_indices)
+        for pixels, _, vram_indices in rendered
+    ]
     blank_tile = tile_to_bitplanes([[0] * 8 for _ in range(8)], bpp)
+
+    placements = [
+        (tile_pos, vram_indices) for _, tile_pos, vram_indices in rendered
+    ]
+    preview_characters = [
+        (pixels, tile_pos) for pixels, tile_pos, _ in rendered
+    ]
 
     (target_dir / "palette.bin").write_bytes(encode_palette(palette, bpp))
     (target_dir / chr_name).write_bytes(
-        build_vram_tiles(character_tiles, blank_tile)
+        build_vram_tiles(character_tile_sets, blank_tile, tiles_to_upload)
     )
-    (target_dir / "tilemap.bin").write_bytes(build_tilemap(tile_pixels_size))
-    build_preview(pixels, palette, bpp, tile_pixels_size, screen_size).save(
-        target_dir / "preview.png"
+    (target_dir / "tilemap.bin").write_bytes(
+        build_tilemap(tile_pixels_size, placements)
     )
+    build_preview(
+        preview_characters, palette, bpp, tile_pixels_size, screen_size
+    ).save(target_dir / "preview.png")
 
 
 def main():
