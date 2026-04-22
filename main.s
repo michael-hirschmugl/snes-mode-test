@@ -5,8 +5,11 @@
 ; SNES PAL demo (LoROM):
 ; - Hardware-safe init sequence
 ; - Mode 1
-; - BG1 only
-; - Shows one 16x16 character made from 4 tiles
+; - BG1 only (4bpp tiles, 16-color palette)
+; - Shows one 16x16 character made from four 4bpp 8x8 tiles
+;
+; NOTE: All BG assets in this demo are 4bpp only. In Mode 1, BG1 and BG2
+; are 4bpp, BG3 would be 2bpp. This project does not ship 2bpp assets.
 ; ------------------------------------------------------------
 
 INIDISP   = $2100
@@ -135,20 +138,20 @@ Reset:
     lda #$01
     sta MDMAEN
 
-    ; PPU setup for Mode 1, BG1 only
+    ; PPU setup for Mode 1 (BG1/BG2 = 4bpp, BG3 = 2bpp), BG1 only.
     lda #$01
     sta BGMODE
     ; BG1SC: top 6 bits = tilemap VRAM base (in 1K-word steps), low 2 bits = size.
     ; Tilemap is uploaded at word $1000 => base index 4 => register value $10.
     lda #$10            ; BG1 tilemap @ word $1000, 32x32
     sta BG1SC
-    stz BG12NBA         ; BG1 tiles @ VRAM $0000
+    stz BG12NBA         ; BG1 4bpp tile base @ VRAM word $0000
     stz BG1HOFS
     stz BG1HOFS
     stz BG1VOFS
     stz BG1VOFS
 
-    ; Upload palette (16 colors for BG1)
+    ; Upload BG1 palette (one 4bpp palette = 16 BGR555 colors = 32 bytes)
     stz CGADD
     lda #$00
     sta DMA0CTRL
@@ -166,8 +169,10 @@ Reset:
     lda #$01
     sta MDMAEN
 
-    ; Upload 18 BG tiles (character tiles at indices 0,1,16,17; rest blank;
-    ; 4bpp => 18 * 32 = 576 bytes)
+    ; Upload 18 BG1 tiles in 4bpp format (32 bytes per tile).
+    ; Character tiles sit at indices 0,1,16,17; the rest are blank padding
+    ; so the character forms a real 2x2 grid in the VRAM tile viewer.
+    ; 18 * 32 = 576 bytes ($0240).
     stz VMADDL
     stz VMADDH
     lda #$80
@@ -242,7 +247,7 @@ PaletteData:
     .incbin "build/palette.bin"
 
 TileData:
-    .incbin "build/tiles.chr"
+    .incbin "build/tiles.4bpp.chr"
 
 TilemapData:
     .incbin "build/tilemap.bin"

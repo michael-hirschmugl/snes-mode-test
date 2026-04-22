@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
+"""
+SNES asset generator (4bpp ONLY).
+
+This script is hard-wired to the SNES 4bpp tile format used by BG1/BG2 in
+Mode 1. It produces:
+
+  - build/palette.bin  : 16 BGR555 colors (exactly one 4bpp palette)
+  - build/tiles.4bpp.chr : 4bpp tile data, 32 bytes per 8x8 tile
+  - build/tilemap.bin  : 32x32 BG tilemap (little-endian word entries)
+  - build/preview.png  : expected screen preview
+
+It does NOT support 2bpp (e.g. Mode 1 BG3), 8bpp (e.g. Mode 3/4 BG1) or
+any Mode-7 formats. Add a dedicated encoder if you need those.
+"""
 from pathlib import Path
 from PIL import Image
+
+BPP = 4
+BYTES_PER_TILE_4BPP = 32
+PALETTE_COLORS_4BPP = 16
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
@@ -20,14 +38,15 @@ for y in range(6, 10):
     for x in range(6, 10):
         pixels[y][x] = 3
 
-# SNES BGR555 palette (16 colors), little-endian words
-# index 0 background, 1 border, 2 cross, 3 center, rest unused
+# SNES BGR555 palette for 4bpp tiles (exactly 16 little-endian word colors).
+# index 0 background, 1 border, 2 cross, 3 center, rest unused.
 palette_bgr555 = [
     0x0000,  # black
     0x7FFF,  # white
     0x03E0,  # green
     0x7C00,  # red
-] + [0x0000] * 12
+] + [0x0000] * (PALETTE_COLORS_4BPP - 4)
+assert len(palette_bgr555) == PALETTE_COLORS_4BPP
 
 palette_bytes = bytearray()
 for c in palette_bgr555:
@@ -37,18 +56,21 @@ for c in palette_bgr555:
 
 
 def tile_to_4bpp(tile_pixels):
+    """Encode an 8x8 tile (pixel values 0..15) to the SNES 4bpp format.
+
+    Layout (32 bytes total per tile):
+      offset 0x00..0x0F : 8 rows of plane 0 + plane 1 (2 bytes per row)
+      offset 0x10..0x1F : 8 rows of plane 2 + plane 3 (2 bytes per row)
+    """
+    assert len(tile_pixels) == 8 and all(len(r) == 8 for r in tile_pixels)
     out = bytearray()
     for row in tile_pixels:
         p0 = 0
         p1 = 0
-        p2 = 0
-        p3 = 0
         for x, val in enumerate(row):
             bit = 7 - x
             p0 |= ((val >> 0) & 1) << bit
             p1 |= ((val >> 1) & 1) << bit
-            p2 |= ((val >> 2) & 1) << bit
-            p3 |= ((val >> 3) & 1) << bit
         out.append(p0)
         out.append(p1)
     for row in tile_pixels:
@@ -60,6 +82,7 @@ def tile_to_4bpp(tile_pixels):
             p3 |= ((val >> 3) & 1) << bit
         out.append(p2)
         out.append(p3)
+    assert len(out) == BYTES_PER_TILE_4BPP
     return out
 
 
@@ -92,7 +115,7 @@ vram_tiles[16] = character_tiles[2]  # bottom-left
 vram_tiles[17] = character_tiles[3]  # bottom-right
 
 chr_data = bytearray().join(vram_tiles)
-(BUILD / "tiles.chr").write_bytes(chr_data)
+(BUILD / "tiles.4bpp.chr").write_bytes(chr_data)
 
 tilemap = [BLANK_TILE_INDEX] * (32 * 32)
 base = 11 * 32 + 14
