@@ -2,7 +2,7 @@
 """
 SNES asset generator (supports 2bpp and 4bpp BG tile formats).
 
-Two independent targets:
+Three independent targets:
 
   mode0_2bpp/
     palette.bin       4-color 2bpp palette, 8 bytes (BGR555)
@@ -19,9 +19,22 @@ Two independent targets:
     -> character uses ALL 16 palette indices (4x4 grid of 4x4 colored
        blocks) so the 4bpp path actually exercises 16 colors.
 
+  mode5_2bpp/
+    palette.bin       4-color 2bpp palette, 8 bytes (same art as mode0)
+    tiles.2bpp.chr    2bpp tile data (same 18 tiles as mode0, layout 0,1,16,17)
+    tilemap.bin       32x32 BG2 tilemap; ONE entry holds the whole character
+                      because Mode 5 BG2 is configured with 16x16 tile size
+                      (BGMODE bit 5) so the PPU auto-reads N, N+1, N+16, N+17.
+    preview.png       expected screen preview (512x448, 2x upscaled)
+    -> Mode 5 is horizontal hi-res (512 px) and this demo runs with
+       interlace on, so the effective resolution is 512x448. The 16x16
+       character therefore appears at half the physical size of the
+       mode0 / mode1 previews; that is intentional.
+
 Usage:
     python3 tools/gen_assets.py mode0_2bpp
     python3 tools/gen_assets.py mode1_4bpp
+    python3 tools/gen_assets.py mode5_2bpp
     python3 tools/gen_assets.py all
 """
 import argparse
@@ -65,11 +78,18 @@ PALETTE_4BPP_BGR555 = [
     0x014F,  # 15 brown        (R=15, G=10)
 ]
 
-# 2x2 tile character placement on the BG1 tilemap.
-CHAR_TILE_X = 14
-CHAR_TILE_Y = 11
+# Default 2x2 tile character placement on the BG tilemap, expressed in
+# tile-units. For 8x8-tile targets this is 8x8 pixel units, for 16x16-tile
+# targets (Mode 5 BG2 with BGMODE bit 5 set) this is 16x16 pixel units.
+CHAR_TILE_X_8 = 14
+CHAR_TILE_Y_8 = 11
+CHAR_TILE_X_16 = 15
+CHAR_TILE_Y_16 = 13
 
-# VRAM tile indices used by both modes (see README: 2x2 grid layout in VRAM).
+# VRAM tile indices used by all modes (see README: 2x2 grid layout in VRAM).
+# In 16x16-tile modes the PPU auto-assembles (N, N+1, N+16, N+17) from a
+# single tilemap entry, which matches this exact layout so the same tile
+# data works for both 8x8-tile and 16x16-tile BG modes.
 CHAR_TL_INDEX = 0
 CHAR_TR_INDEX = 1
 BLANK_INDEX = 2
@@ -193,13 +213,26 @@ def build_vram_tiles(character_tiles, blank_tile):
     return bytearray().join(tiles)
 
 
-def build_tilemap():
+def build_tilemap(tile_pixels_size):
+    """Build a 32x32 BG tilemap that places the character near center.
+
+    tile_pixels_size = 8  -> four 8x8 entries (0,1,16,17) at (14,11)
+    tile_pixels_size = 16 -> one 16x16 entry (index 0) at (15,13); in this
+                             mode the PPU auto-reads N, N+1, N+16, N+17
+                             per tilemap entry, so a single entry covers
+                             the whole 2x2 VRAM tile block.
+    """
     tm = [BLANK_INDEX] * (32 * 32)
-    base = CHAR_TILE_Y * 32 + CHAR_TILE_X
-    tm[base] = CHAR_TL_INDEX
-    tm[base + 1] = CHAR_TR_INDEX
-    tm[base + 32] = CHAR_BL_INDEX
-    tm[base + 33] = CHAR_BR_INDEX
+    if tile_pixels_size == 8:
+        base = CHAR_TILE_Y_8 * 32 + CHAR_TILE_X_8
+        tm[base] = CHAR_TL_INDEX
+        tm[base + 1] = CHAR_TR_INDEX
+        tm[base + 32] = CHAR_BL_INDEX
+        tm[base + 33] = CHAR_BR_INDEX
+    elif tile_pixels_size == 16:
+        tm[CHAR_TILE_Y_16 * 32 + CHAR_TILE_X_16] = CHAR_TL_INDEX
+    else:
+        raise ValueError(f"unsupported tile_pixels_size {tile_pixels_size}")
     out = bytearray()
     for entry in tm:
         out.append(entry & 0xFF)
@@ -214,19 +247,32 @@ def bgr555_to_rgb(c):
     return (r, g, b)
 
 
-def build_preview(pixels, palette_bgr555, bpp):
-    """Render a 256x224 preview of what the ROM should show, upscaled 3x."""
+def build_preview(pixels, palette_bgr555, bpp, tile_pixels_size, screen_size):
+    """Render a 1:1 preview of what the ROM should show, then upscale.
+
+    screen_size = (256, 224) for standard modes, (512, 448) for Mode 5
+                  + interlace hi-res. The character's pixel origin is
+                  derived from the same tile-units as build_tilemap().
+    """
     slots = PALETTE_COLORS[bpp]
     rgb = [bgr555_to_rgb(c) for c in palette_bgr555]
     while len(rgb) < slots:
         rgb.append((0, 0, 0))
-    img = Image.new("RGB", (256, 224), rgb[0])
-    origin_x = CHAR_TILE_X * 8
-    origin_y = CHAR_TILE_Y * 8
+    screen_w, screen_h = screen_size
+    img = Image.new("RGB", (screen_w, screen_h), rgb[0])
+    if tile_pixels_size == 8:
+        origin_x = CHAR_TILE_X_8 * 8
+        origin_y = CHAR_TILE_Y_8 * 8
+    else:
+        origin_x = CHAR_TILE_X_16 * 16
+        origin_y = CHAR_TILE_Y_16 * 16
     for y in range(CHAR_H):
         for x in range(CHAR_W):
             img.putpixel((origin_x + x, origin_y + y), rgb[pixels[y][x]])
-    return img.resize((256 * 3, 224 * 3), Image.NEAREST)
+    # Smaller screens get 3x upscale; the 512x448 hi-res preview stays at
+    # 2x so the PNG doesn't explode in size while still being inspectable.
+    upscale = 3 if screen_w <= 256 else 2
+    return img.resize((screen_w * upscale, screen_h * upscale), Image.NEAREST)
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +285,28 @@ TARGETS = {
         "chr_name": "tiles.2bpp.chr",
         "palette": PALETTE_2BPP_BGR555,
         "render_pixels": render_2bpp_character_pixels,
+        "tile_pixels_size": 8,
+        "screen_size": (256, 224),
     },
     "mode1_4bpp": {
         "bpp": 4,
         "chr_name": "tiles.4bpp.chr",
         "palette": PALETTE_4BPP_BGR555,
         "render_pixels": render_4bpp_character_pixels,
+        "tile_pixels_size": 8,
+        "screen_size": (256, 224),
+    },
+    "mode5_2bpp": {
+        "bpp": 2,
+        "chr_name": "tiles.2bpp.chr",
+        "palette": PALETTE_2BPP_BGR555,
+        "render_pixels": render_2bpp_character_pixels,
+        # Mode 5 BG2 with BGMODE bit 5 set uses 16x16 BG tiles assembled
+        # from the same N, N+1, N+16, N+17 VRAM layout as mode0.
+        "tile_pixels_size": 16,
+        # Mode 5 is horizontal hi-res; with interlace on, the effective
+        # display is 512x448, so previews are rendered at that size.
+        "screen_size": (512, 448),
     },
 }
 
@@ -255,6 +317,8 @@ def generate_target(name):
     chr_name = spec["chr_name"]
     palette = spec["palette"]
     pixels = spec["render_pixels"]()
+    tile_pixels_size = spec["tile_pixels_size"]
+    screen_size = spec["screen_size"]
 
     target_dir = BUILD / name
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -266,8 +330,10 @@ def generate_target(name):
     (target_dir / chr_name).write_bytes(
         build_vram_tiles(character_tiles, blank_tile)
     )
-    (target_dir / "tilemap.bin").write_bytes(build_tilemap())
-    build_preview(pixels, palette, bpp).save(target_dir / "preview.png")
+    (target_dir / "tilemap.bin").write_bytes(build_tilemap(tile_pixels_size))
+    build_preview(pixels, palette, bpp, tile_pixels_size, screen_size).save(
+        target_dir / "preview.png"
+    )
 
 
 def main():
