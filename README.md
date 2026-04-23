@@ -33,15 +33,29 @@ boot on real hardware (e.g. via a flash cart).
 
 Each `.sfc` is exactly **32 KiB** LoROM with no SRAM, no coprocessor, and a
 PAL destination code. The internal header (bank 00, `$FFC0-$FFDF`) advertises:
-map-mode `$20` (LoROM SlowROM), cart-type `$00` (ROM only), ROM-size `$05`
-(2^5 KiB = 32 KiB), SRAM-size `$00`, destination `$02` (Europe), fixed-value
-`$00` (old-style header), and a post-link checksum / complement written by
-`tools/fix_checksum.py` such that `checksum XOR complement = $FFFF` and
-`sum(ROM_bytes) mod $10000 = checksum`. The reset path is Emu-RESET at
-`$FFFC` pointing to `$8000`; native RESET does not exist and is left zero.
-No PAL-specific setup is needed — the PPU runs at 50 Hz on PAL hardware
-regardless. Copy a `.sfc` to an EverDrive / SD2SNES / FXPak Pro on a PAL
-SNES and it boots.
+map-mode `$20` (LoROM SlowROM), cart-type `$00` (ROM only), ROM-size `$08`
+(Everdrive compatibility — see below), SRAM-size `$00`, destination `$02`
+(Europe), fixed-value `$00` (old-style header), and a post-link checksum /
+complement written by `tools/fix_checksum.py` such that
+`checksum XOR complement = $FFFF` and `sum(ROM_bytes) mod $10000 = checksum`.
+The reset path is Emu-RESET at `$FFFC` pointing to `$8000`; native RESET does
+not exist and is left zero. No PAL-specific setup is needed — the PPU runs at
+50 Hz on PAL hardware regardless. Copy a `.sfc` to an EverDrive / SD2SNES /
+FXPak Pro on a PAL SNES and it boots.
+
+**Everdrive ROM-size field:** The SNES spec says `$05` for a 32 KiB ROM
+(`2^5 KiB`), but the Everdrive firmware maps `$05` as "8 Mbit" and places
+the ROM at the wrong address, producing a black screen. `$08` makes the
+Everdrive select its "512k" LoROM mapping, which correctly mirrors the 32 KiB
+image. The S-CPU itself ignores this byte.
+
+**PPU registers on real hardware:** bsnes initialises all PPU registers to 0;
+real hardware leaves them undefined. All `main_*.s` files explicitly zero
+`TMW` (`$212E`), `TSW` (`$212F`), `CGWSEL` (`$2130`), `CGADSUB` (`$2131`),
+`W12SEL` (`$2123`) and `W34SEL` (`$2124`) after setting `TM`/`TS`. In Mode 5
+these registers are load-bearing: an uninitialised `CGADSUB` with
+colour-subtraction bits set for the active BG causes every pixel to cancel to
+black because the same BG layer appears on both main and sub screens.
 
 In bsnes-plus' manifest viewer these ROMs show the minimal LoROM descriptor
 (`<cartridge region='PAL'><rom><map .../></rom></cartridge>` with two

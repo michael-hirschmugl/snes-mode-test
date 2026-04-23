@@ -628,16 +628,59 @@ this, which is why Mode 5 can reuse the Mode 0 `tiles.2bpp.chr` file
 unchanged. If you ever reorganise the VRAM tile layout, double-check
 that this property still holds or Mode 5 will display garbage.
 
+### 15. Real-hardware black screen (Everdrive / flash cart)
+
+Two issues cause a black screen on real hardware that are invisible in
+bsnes (which initialises all registers to 0 at power-on):
+
+**15a. ROM size byte (`$FFD7`) must be `$08`, not `$05`.**
+
+The Everdrive uses `$FFD7` to choose its internal LoROM mapping:
+
+| Header byte | Everdrive display | Result |
+|---|---|---|
+| `$08` | "512k" | 32 KiB mirrored correctly → boots ✓ |
+| `$05` | "8m" | ROM at wrong address → CPU reads garbage → black screen ✗ |
+
+`$05` is what the SNES spec says for a 32 KiB ROM (`2^5 KiB`), but
+Everdrive firmware does not handle it correctly for LoROM. All
+`main_*.s` files use `$08`. The S-CPU itself ignores this field.
+
+**15b. PPU registers are undefined on real hardware.**
+
+bsnes resets all PPU registers to `$00`; real hardware leaves them in
+whatever state the previous boot left them. The six registers below
+must be explicitly zeroed before force-blank is released. In Mode 5
+with `TM = TS = $01/$02` (same BG on both screens) they are
+load-bearing:
+
+| Register | Address | Risk if non-zero |
+|---|---|---|
+| `CGADSUB` | `$2131` | Bit 7=1 + matching BG bit → same BG on main and sub cancel to black |
+| `CGWSEL` | `$2130` | Enables colour math unconditionally |
+| `TMW` | `$212E` | Bit set for BG → BG window-masked off main screen |
+| `TSW` | `$212F` | Bit set for BG → BG window-masked off sub screen |
+| `W12SEL` | `$2123` | BG1/BG2 window enable bits; feeds TMW/TSW masking |
+| `W34SEL` | `$2124` | BG3/BG4 window enable bits |
+
+In Mode 0/1 (single BG, `TS = $00`) most of these are harmless. In
+Mode 5 they all become load-bearing. All `main_*.s` files zero these
+six registers immediately after `sta TM` / `sta TS` — do not remove
+those `stz` instructions.
+
 ---
 
 ## When in doubt
 
-- Read the four `main_*.s` side by side to see which fields vary per
+- Read the five `main_*.s` side by side to see which fields vary per
   mode (`BGMODE`, BGxSC / BGxNBA / BGxHOFS, `TM`/`TS`, `SETINI`).
 - Load the ROM in `bsnes-plus` and open Tools → VRAM viewer / Tile viewer
   to verify tile and palette uploads before blaming logic.
-- If the screen is black, first check `BGxSC` vs. tilemap upload
-  address, then `TM` (and `TS` for Mode 5), then force blank.
+- If the screen is black in the emulator, first check `BGxSC` vs.
+  tilemap upload address, then `TM` (and `TS` for Mode 5), then force
+  blank.
+- If the screen is black only on real hardware, check pitfall 15a
+  (ROM size byte = `$08`) and 15b (PPU register `stz` block present).
 - If Mode 5 shows a striped character, `TS` isn't set. If Mode 5 shows
   a stretched character, interlace is off.
 - If the wallpaper demo renders a mosaic of garbage, check that the

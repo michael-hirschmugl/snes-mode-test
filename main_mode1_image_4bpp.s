@@ -42,6 +42,10 @@ CGADD     = $2121
 CGDATA    = $2122
 TM        = $212C
 TS        = $212D
+TMW       = $212E
+TSW       = $212F
+CGWSEL    = $2130
+CGADSUB   = $2131
 NMITIMEN  = $4200
 WRIO      = $4201
 MDMAEN    = $420B
@@ -225,6 +229,15 @@ Reset:
     lda #$01            ; BG1 on main screen
     sta TM
     stz TS
+    ; Real hardware leaves these registers undefined; bsnes initialises all
+    ; to 0. Zero them explicitly to prevent window-masking or colour-math
+    ; from producing a black screen on first power-on.
+    stz TMW             ; no window masking on main screen
+    stz TSW             ; no window masking on sub  screen
+    stz CGWSEL          ; no color-math windowing
+    stz CGADSUB         ; no color math (addition / subtraction)
+    stz $2123           ; W12SEL: no BG1/BG2 window enables
+    stz $2124           ; W34SEL: no BG3/BG4 window enables
 
     lda #$0F
     sta INIDISP         ; end force blank, full brightness
@@ -262,7 +275,10 @@ TilemapData:
 .segment "HEADER"
     ; 21-byte internal title
     .byte "MODE1 IMG PAL DEMO   "
-    .byte $20, $00, $05, $00
+    ; ROM size $08 required for Everdrive LoROM mapping: $05 (= 32 KiB per
+    ; SNES spec) makes Everdrive map the ROM as "8m" at the wrong address;
+    ; $08 selects the "512k" mapping that mirrors 32 KiB correctly.
+    .byte $20, $00, $08, $00
     .byte $02
     .byte $00, $00
     .word $0000

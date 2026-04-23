@@ -57,6 +57,10 @@ CGADD     = $2121
 CGDATA    = $2122
 TM        = $212C
 TS        = $212D
+TMW       = $212E
+TSW       = $212F
+CGWSEL    = $2130
+CGADSUB   = $2131
 SETINI    = $2133
 NMITIMEN  = $4200
 WRIO      = $4201
@@ -278,6 +282,16 @@ Reset:
     sta TM
     lda #$02            ; BG2 on sub screen
     sta TS
+    ; Real hardware leaves these registers undefined; bsnes initialises all
+    ; to 0. In Mode 5 with TM=TS=$02 (BG2 on both screens) they are
+    ; load-bearing: CGADSUB bit7=1 + bit1=1 cancels BG2 to black, and
+    ; TMW/TSW bit1=1 window-masks BG2 off the screen entirely.
+    stz TMW             ; no window masking on main screen
+    stz TSW             ; no window masking on sub  screen
+    stz CGWSEL          ; no color-math windowing
+    stz CGADSUB         ; no color math (addition / subtraction)
+    stz $2123           ; W12SEL: no BG1/BG2 window enables
+    stz $2124           ; W34SEL: no BG3/BG4 window enables
 
     ; End force blank, brightness max
     lda #$0F
@@ -313,9 +327,11 @@ TilemapData:
     ; 21-byte internal title
     .byte "MODE5 16X16 PAL DEMO "
     ; map mode, cart type, ROM size, SRAM size
-    ; ROM size byte = ceil(log2(size_in_KiB)); 2^5 KiB = 32 KiB matches the
-    ; 32768-byte .sfc produced by snes.cfg.
-    .byte $20, $00, $05, $00
+    ; ROM size $08 required for Everdrive LoROM mapping: $05 (= 32 KiB per
+    ; SNES spec) makes Everdrive map the ROM as "8m" at the wrong address;
+    ; $08 selects the "512k" mapping that mirrors 32 KiB correctly.
+    ; The S-CPU itself ignores this field.
+    .byte $20, $00, $08, $00
     ; destination code: $02 = Europe (PAL)
     .byte $02
     ; fixed value + version. $00 = old-style header (no extended header at
